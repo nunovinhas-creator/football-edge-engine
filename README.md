@@ -1,17 +1,13 @@
 # Football Edge Engine
 
-Research project for building a quantitative football betting platform.
+Quantitative football betting research platform focused on:
 
-Current status:
-- Project planning
-- API analysis
-- Architecture design
+- Feature Engineering
+- Game State Modelling
+- Expected Value Detection
 
-Target markets:
+Current Markets:
+
 - Corners
 - Shots
 - Cards
-- Live betting
-
-Goal:
-Detect positive expected value (+EV) opportunities using game state modelling and feature engineering.
