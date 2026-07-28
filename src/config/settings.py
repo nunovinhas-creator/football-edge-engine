@@ -1,0 +1,7 @@
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+API_KEY = os.getenv("BZZ_API_KEY")
+BASE_URL = "https://sports.bzzoiro.com/api/v2"
