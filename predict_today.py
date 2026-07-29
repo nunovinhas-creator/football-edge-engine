@@ -1,5 +1,5 @@
 """
-Script de Previsão Diária com Conversão de Data via Pandas (Filtro Estrito em UTC).
+Script de Previsão Diária com Logs de Validação Temporal no Runner.
 """
 
 import os
@@ -13,7 +13,7 @@ from src.engine.full_engine import run_pipeline
 from src.utils.telegram_notifier import send_telegram_alert
 
 def fetch_enriched_data_from_bsd():
-    print("📡 A ligar à BSD API para procurar eventos futuros/de hoje...")
+    print("📡 A ligar à BSD API...")
     client = BzzoiroClient()
     
     try:
@@ -21,40 +21,41 @@ def fetch_enriched_data_from_bsd():
         events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
         
         if not events_list:
-            print("ℹ️ Nenhum evento retornado pela BSD API.")
+            print("ℹ️ Nenhum evento retornado pela API.")
             return pd.DataFrame()
 
-        # Timestamp atual em UTC com Pandas
         now_utc = pd.Timestamp.now(tz='UTC')
-        print(f"🕒 Hora Atual UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"🕒 [UTC ATUAL NO SERVIDOR]: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         active_future_events = []
 
         for e in events_list:
-            # 1. Ignorar jogos já terminados ou cancelados
-            status = str(e.get('status', '')).lower()
-            if status in ['finished', 'ft', 'canceled', 'postponed', 'cancelled']:
-                continue
-
-            # 2. Obter campo de data (testa vários nomes comuns de chave na API)
+            home = e.get('home_team', 'Casa')
+            away = e.get('away_team', 'Fora')
             raw_date = e.get('event_date') or e.get('date') or e.get('start_time')
+            
             if not raw_date:
+                print(f"⚠️ [SEM DATA] {home} vs {away}")
                 continue
 
             try:
-                # pd.to_datetime converte robustamente qualquer formato para UTC
+                # Converte para timestamp UTC
                 event_dt = pd.to_datetime(raw_date, utc=True)
                 
-                # Se o jogo for anterior à hora atual, descarta!
+                # Se a data for no passado (anterior a hoje/agora)
                 if event_dt < now_utc:
+                    print(f"❌ Rejeitado (Passado): {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
                     continue
+                else:
+                    print(f"✅ Aceite (Futuro): {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
+                    
             except Exception as err:
-                print(f"⚠️ Erro ao converter data '{raw_date}': {err}")
+                print(f"⚠️ Erro ao parsing da data '{raw_date}' em {home} vs {away}: {err}")
                 continue
 
             active_future_events.append((e, event_dt))
 
-        print(f"📊 Encontrados {len(active_future_events)} jogos no futuro/hoje após filtro de data.")
+        print(f"\n📊 Total Retornados: {len(events_list)} | Mantidos (Futuros): {len(active_future_events)}")
 
         if not active_future_events:
             return pd.DataFrame()
@@ -102,7 +103,7 @@ def fetch_enriched_data_from_bsd():
         return pd.DataFrame()
 
 def main():
-    print("⚽ A processar apostas para jogos futuros...")
+    print("⚽ A processar apostas...")
 
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
