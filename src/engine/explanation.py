@@ -1,25 +1,62 @@
-def generate_explanation(result):
+"""
+Módulo de Explicabilidade do Engine.
+Converte objetos DecisionResult em relatórios visuais e legíveis para CLI/Logs.
+"""
 
-    reasons = []
+from typing import Any
 
-    if result["edge"] >= 5:
-        reasons.append(
-            f"Edge elevado (+{result['edge']}%)"
-        )
+def generate_explanation(decision_result: Any, match_info: str = "Jogo") -> str:
+    """
+    Gera um relatório formatado em texto sobre a decisão tomada.
+    """
+    # Se receber a estrutura antiga (dict ou bool), trata com fallback
+    if isinstance(decision_result, bool):
+        return f"[{'BET' if decision_result else 'PASS'}] Decisão simplificada."
+    
+    action = getattr(decision_result, 'action', 'PASS')
+    score = getattr(decision_result, 'total_score', 0.0)
+    edge = getattr(decision_result, 'edge', 0.0)
+    stake = getattr(decision_result, 'recommended_stake', 0.0)
+    factors = getattr(decision_result, 'factors', [])
+    reasons = getattr(decision_result, 'reasons', [])
 
-    if result["ev"] >= 10:
-        reasons.append(
-            f"EV positivo (+{result['ev']}%)"
-        )
+    status_symbol = "🟢 [APROVADO]" if action == "BET" else "🔴 [REJEITADO]"
+    
+    lines = []
+    lines.append("=" * 50)
+    lines.append(f" DECISÃO FINAL: {action} {status_symbol}")
+    lines.append(f" Contexto: {match_info}")
+    lines.append(f" Pontuação Geral (Score): {score:.1f}/100")
+    lines.append("-" * 50)
+    lines.append(" FACTORES AVALIADOS:")
+    
+    for f in factors:
+        icon = "  ✓" if f.passed else "  ✗"
+        if "Edge" in f.name:
+            val_str = f"{f.value:.1%}" if abs(f.value) <= 1.0 else f"{f.value:.1f}%"
+            thresh_str = f"{f.threshold:.1%}" if abs(f.threshold) <= 1.0 else f"{f.threshold:.1f}%"
+        elif "Stake" in f.name:
+            val_str = f"{f.value:.1%}"
+            thresh_str = f"{f.threshold:.1%}"
+        else:
+            val_str = f"{f.value:.2f}"
+            thresh_str = f"{f.threshold:.2f}"
+            
+        lines.append(f"{icon} {f.name:<18}: {val_str} (Mín/Máx: {thresh_str})")
+        
+    lines.append("-" * 50)
+    lines.append(f" STAKE RECOMENDADA: {stake:.1%}")
+    
+    if reasons:
+        lines.append("-" * 50)
+        lines.append(" MOTIVOS DE REJEIÇÃO / AVISOS:")
+        for r in reasons:
+            lines.append(f"  - {r}")
+            
+    lines.append("=" * 50)
+    
+    return "\n".join(lines)
 
-    if result["confidence"] == "HIGH":
-        reasons.append(
-            "Modelo com alta confiança"
-        )
-
-    if result["xg"]:
-        reasons.append(
-            f"xG considerado: {result['xg']}"
-        )
-
-    return reasons
+def explain(decision_result: Any, match_info: str = "Jogo") -> str:
+    """Wrapper de conveniência."""
+    return generate_explanation(decision_result, match_info)
