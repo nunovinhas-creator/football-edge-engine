@@ -1,15 +1,16 @@
 """
-Módulo de Backtesting do Engine de Apostas com Stress Testing e Gráfico Visual.
+Módulo de Backtesting do Engine de Apostas com Stress Testing, Gráfico Visual e Notificação Telegram.
 """
 
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use('Agg')  # Suporte a ambientes sem interface gráfica (Codespaces/CI)
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import KFold
 from src.engine.full_engine import run_pipeline
+from src.utils.telegram_notifier import send_telegram_alert
 
 def generate_synthetic_historical_data(n_samples: int = 300) -> pd.DataFrame:
     np.random.seed(42)
@@ -42,8 +43,8 @@ def generate_synthetic_historical_data(n_samples: int = 300) -> pd.DataFrame:
 def run_backtest(
     initial_bankroll: float = 1000.0, 
     line: float = 12.5,
-    slippage_pct: float = 0.02,     # Queda média de 2% nas odds entre sinal e aposta
-    commission_pct: float = 0.00   # Comissões de exchange/casa se aplicável
+    slippage_pct: float = 0.02,
+    commission_pct: float = 0.00
 ):
     try:
         df = pd.read_csv('research/pressure_shots/features_v2.csv')
@@ -120,7 +121,6 @@ def run_backtest(
                 continue
 
             total_staked += stake
-            
             odd_stressed = max(1.01, odd * (1.0 - slippage_pct))
 
             if actual_result == 1:
@@ -154,6 +154,7 @@ def run_backtest(
     yield_base = (total_profit / total_staked * 100) if total_staked > 0 else 0.0
     yield_stressed = (total_profit_stressed / total_staked * 100) if total_staked > 0 else 0.0
 
+    # Imprimir no Terminal
     print("\n" + "=" * 60)
     print(f" RESULTADOS DE BACKTESTING & STRESS TEST")
     print("=" * 60)
@@ -162,6 +163,7 @@ def run_backtest(
     print(f"  • Banca com Stress    : {current_bankroll_stressed:.2f}€ (Yield com Slippage {slippage_pct:.1%}: {yield_stressed:+.2f}%)")
     print(f"  • Max Drawdown        : {max_drawdown * 100:.2f}%")
 
+    # Gerar Gráfico
     plt.figure(figsize=(10, 5))
     plt.plot(bankroll_history, label='Evolução da Banca (Ideal)', color='#2ecc71', linewidth=2)
     plt.plot(bankroll_history_stressed, label=f'Evolução da Banca com Stress ({slippage_pct:.0%} Slippage)', color='#e74c3c', linestyle='--', linewidth=2)
@@ -176,6 +178,18 @@ def run_backtest(
     chart_path = 'research/bankroll_curve.png'
     plt.savefig(chart_path, dpi=300)
     print(f"📈 Gráfico salvo com sucesso em: {chart_path}\n" + "=" * 60)
+
+    # Enviar Notificação Resumo para o Telegram
+    telegram_msg = (
+        f"📊 *RELATÓRIO DE EXECUÇÃO DIÁRIA*\n\n"
+        f"⚽ *Jogos Analisados:* {len(df)}\n"
+        f"✅ *Apostas Aprovadas:* {bets_placed} ({win_rate:.1f}% acerto)\n"
+        f"💰 *Banca Base Final:* {current_bankroll:.2f}€ (`{yield_base:+.2f}% Yield`)\n"
+        f"🛡️ *Banca com Stress (2%):* {current_bankroll_stressed:.2f}€ (`{yield_stressed:+.2f}% Yield`)\n"
+        f"📉 *Max Drawdown:* {max_drawdown * 100:.2f}%\n\n"
+        f"📈 _Gráfico de performance guardado nos artefactos do GitHub._"
+    )
+    send_telegram_alert(telegram_msg)
 
 if __name__ == "__main__":
     run_backtest()
