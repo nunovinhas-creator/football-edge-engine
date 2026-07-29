@@ -1,5 +1,5 @@
 """
-Script de Previsão Diária com Filtro Automático de Jogos de Hoje / Futuros.
+Script de Previsão Diária com Procura Direta de Eventos Futuros/Ativos na BSD API.
 """
 
 import os
@@ -13,53 +13,37 @@ from src.engine.full_engine import run_pipeline
 from src.utils.telegram_notifier import send_telegram_alert
 
 def fetch_enriched_data_from_bsd():
-    print("📡 A ligar à BSD API para recolher odds de jogos ativos...")
+    print("📡 A ligar à BSD API para procurar eventos futuros/ativos...")
     client = BzzoiroClient()
     
     try:
-        response = client.get("odds/?limit=200&offset=0")
-        results = response.get("results", []) if isinstance(response, dict) else response
+        # 1. Procurar lista de eventos na BSD API
+        events_resp = client.get("events/?limit=100&ordering=-event_date")
+        events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
         
-        if not results:
-            print("ℹ️ Nenhuma odd retornada pela BSD API no momento.")
+        if not events_list:
+            print("ℹ️ Nenhum evento retornado no endpoint /events/.")
             return pd.DataFrame()
 
-        unique_event_ids = list({item.get('event_id') for item in results if item.get('event_id')})
-        print(f"📊 A verificar estado e data de {len(unique_event_ids)} eventos únicos...")
+        # 2. Filtrar eventos ativos/futuros (excluir terminados)
+        active_events = [e for e in events_list if e.get('status') != 'finished']
+        
+        # Se a ordenação não devolver futuros imediatamente, filtra por status ou data
+        if not active_events:
+            print("ℹ️ A tentar rota alternada de eventos futuros...")
+            events_resp = client.get("events/?limit=100")
+            events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
+            active_events = [e for e in events_list if e.get('status') != 'finished']
 
-        now_utc = datetime.now(timezone.utc)
-        events_cache = {}
+        print(f"📊 Encontrados {len(active_events)} eventos ativos/futuros.")
 
-        for eid in unique_event_ids:
-            try:
-                e_data = client.get(f"events/{eid}/")
-                if isinstance(e_data, dict) and 'home_team' in e_data:
-                    # 1. Filtro: Ignorar jogos terminados
-                    if e_data.get('status') == 'finished':
-                        continue
-                    
-                    # 2. Filtro: Verificar se o jogo é de hoje ou futuro
-                    raw_date = e_data.get('event_date', '')
-                    if raw_date:
-                        event_dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                        # Descomentar/Ajustar se quiseres apenas jogos a partir de hoje:
-                        # if event_dt < now_utc:
-                        #     continue
+        if not active_events:
+            return pd.DataFrame()
 
-                    events_cache[eid] = e_data
-            except Exception as err:
-                print(f"⚠️ Erro ao obter detalhes do evento {eid}: {err}")
-
-        print(f"✅ Encontrados {len(events_cache)} jogos ativos/futuros elegíveis.")
-
+        # 3. Mapear jogos e associar odds
         matches = []
-        for item in results:
-            eid = item.get('event_id')
-            # Se o evento foi filtrado (ex: já terminou), salta
-            if eid not in events_cache:
-                continue
-
-            event = events_cache[eid]
+        for event in active_events:
+            eid = event.get('id')
             home = event.get('home_team', 'Equipa Casa')
             away = event.get('away_team', 'Equipa Fora')
             
@@ -73,7 +57,14 @@ def fetch_enriched_data_from_bsd():
                     formatted_time = "Hoje"
 
             league_id = event.get('league_id', 'Geral')
-            odd_val = float(item.get('decimal_odds', item.get('price', item.get('odd', 2.00))))
+            
+            # Tentar obter odds do evento (ou usar odd padrão de mercado se não houver cotação ativa)
+            try:
+                odds_resp = client.get(f"odds/?event_id={eid}")
+                odds_results = odds_resp.get("results", []) if isinstance(odds_resp, dict) else odds_resp
+                odd_val = float(odds_results[0].get('decimal_odds', 2.05)) if odds_results else 2.00
+            except Exception:
+                odd_val = 2.00
 
             seed = int(eid) if str(eid).isdigit() else abs(hash(home + away)) % 100000
             np.random.seed(seed)
@@ -103,7 +94,7 @@ def fetch_enriched_data_from_bsd():
         return pd.DataFrame()
 
 def main():
-    print("⚽ A iniciar processamento de apostas para jogos ativos...")
+    print("⚽ A iniciar processamento de apostas reais em eventos ativos...")
 
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
@@ -129,7 +120,7 @@ def main():
     df_today = fetch_enriched_data_from_bsd()
 
     if df_today.empty:
-        send_telegram_alert("ℹ️ *Análise Diária:* Nenhum evento ativo ou futuro retornado pela BSD API de momento.")
+        send_telegram_alert("ℹ️ *Análise Diária:* Nenhum evento ativo retornado pela BSD API de momento.")
         print("ℹ️ Sem eventos ativos no momento.")
         return
 
@@ -203,9 +194,9 @@ def main():
             )
 
         send_telegram_alert(msg)
-        print(f"✅ Boletim de jogos ativos enviado para o Telegram!")
+        print("✅ Boletim enviado para o Telegram com sucesso!")
     else:
-        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos ativos analisados na BSD API, mas sem oportunidades de valor no momento.")
+        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos ativos analisados, mas nenhuma aposta cumpre os critérios de EV+.")
 
 if __name__ == "__main__":
     main()
