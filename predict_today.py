@@ -1,11 +1,11 @@
 """
-Script de Previsão Diária com Filtro Rigoroso de Timestamp (Apenas Jogos Futuros/Hoje).
+Script de Previsão Diária com Conversão de Data via Pandas (Filtro Estrito em UTC).
 """
 
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime, timezone
+from datetime import datetime
 from sklearn.ensemble import RandomForestClassifier
 
 from src.api.client import BzzoiroClient
@@ -13,63 +13,60 @@ from src.engine.full_engine import run_pipeline
 from src.utils.telegram_notifier import send_telegram_alert
 
 def fetch_enriched_data_from_bsd():
-    print("📡 A ligar à BSD API para procurar eventos estritamente futuros/de hoje...")
+    print("📡 A ligar à BSD API para procurar eventos futuros/de hoje...")
     client = BzzoiroClient()
     
     try:
-        # Obter eventos da API
         events_resp = client.get("events/?limit=200")
         events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
         
         if not events_list:
-            print("ℹ️ Nenhum evento retornado.")
+            print("ℹ️ Nenhum evento retornado pela BSD API.")
             return pd.DataFrame()
 
-        now_utc = datetime.now(timezone.utc)
+        # Timestamp atual em UTC com Pandas
+        now_utc = pd.Timestamp.now(tz='UTC')
+        print(f"🕒 Hora Atual UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+
         active_future_events = []
 
         for e in events_list:
-            # 1. Ignorar por status conhecido de terminação
+            # 1. Ignorar jogos já terminados ou cancelados
             status = str(e.get('status', '')).lower()
             if status in ['finished', 'ft', 'canceled', 'postponed', 'cancelled']:
                 continue
 
-            # 2. VALIDAÇÃO TEMPORAL ESTRITA: O jogo TEM de ser hoje ou no futuro
-            raw_date = e.get('event_date')
+            # 2. Obter campo de data (testa vários nomes comuns de chave na API)
+            raw_date = e.get('event_date') or e.get('date') or e.get('start_time')
             if not raw_date:
                 continue
 
             try:
-                event_dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                # Se a data do jogo já passou, salta fora!
+                # pd.to_datetime converte robustamente qualquer formato para UTC
+                event_dt = pd.to_datetime(raw_date, utc=True)
+                
+                # Se o jogo for anterior à hora atual, descarta!
                 if event_dt < now_utc:
                     continue
-            except Exception:
+            except Exception as err:
+                print(f"⚠️ Erro ao converter data '{raw_date}': {err}")
                 continue
 
-            active_future_events.append(e)
+            active_future_events.append((e, event_dt))
 
-        print(f"📊 Encontrados {len(active_future_events)} jogos válidos no futuro/hoje.")
+        print(f"📊 Encontrados {len(active_future_events)} jogos no futuro/hoje após filtro de data.")
 
         if not active_future_events:
             return pd.DataFrame()
 
         matches = []
-        for event in active_future_events:
+        for event, event_dt in active_future_events:
             eid = event.get('id')
             home = event.get('home_team', 'Equipa Casa')
             away = event.get('away_team', 'Equipa Fora')
-            
-            raw_date = event.get('event_date', '')
-            try:
-                dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                formatted_time = dt.strftime('%d/%m às %H:%HM')
-            except Exception:
-                formatted_time = "Hoje"
-
+            formatted_time = event_dt.strftime('%d/%m às %H:%HM')
             league_id = event.get('league_id', 'Geral')
             
-            # Buscar odd real do evento
             try:
                 odds_resp = client.get(f"odds/?event_id={eid}")
                 odds_results = odds_resp.get("results", []) if isinstance(odds_resp, dict) else odds_resp
@@ -105,12 +102,12 @@ def fetch_enriched_data_from_bsd():
         return pd.DataFrame()
 
 def main():
-    print("⚽ A processar apostas para jogos futuros de hoje...")
+    print("⚽ A processar apostas para jogos futuros...")
 
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
     except FileNotFoundError:
-        from research.backtest_engine import generate_synthetic_historical_data
+        from research.backtest_engine import generatesynthetic_historical_data
         df_hist = generate_synthetic_historical_data(300)
 
     line = 12.5
@@ -205,7 +202,7 @@ def main():
             )
 
         send_telegram_alert(msg)
-        print("✅ Boletim enviado com sucesso!")
+        print("✅ Boletim enviado para o Telegram!")
     else:
         send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos futuros analisados, mas nenhuma aposta cumpre os critérios de EV+.")
 
