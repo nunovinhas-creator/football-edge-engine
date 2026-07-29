@@ -6,10 +6,6 @@ Converte objetos DecisionResult em relatórios visuais e legíveis para CLI/Logs
 from typing import Any
 
 def generate_explanation(decision_result: Any, match_info: str = "Jogo") -> str:
-    """
-    Gera um relatório formatado em texto sobre a decisão tomada.
-    """
-    # Se receber a estrutura antiga (dict ou bool), trata com fallback
     if isinstance(decision_result, bool):
         return f"[{'BET' if decision_result else 'PASS'}] Decisão simplificada."
     
@@ -33,8 +29,8 @@ def generate_explanation(decision_result: Any, match_info: str = "Jogo") -> str:
     for f in factors:
         icon = "  ✓" if f.passed else "  ✗"
         if "Edge" in f.name:
-            val_str = f"{f.value:.1%}" if abs(f.value) <= 1.0 else f"{f.value:.1f}%"
-            thresh_str = f"{f.threshold:.1%}" if abs(f.threshold) <= 1.0 else f"{f.threshold:.1f}%"
+            val_str = f"{f.value:+.1%}"
+            thresh_str = f"{f.threshold:.1%}"
         elif "Stake" in f.name:
             val_str = f"{f.value:.1%}"
             thresh_str = f"{f.threshold:.1%}"
@@ -58,5 +54,4 @@ def generate_explanation(decision_result: Any, match_info: str = "Jogo") -> str:
     return "\n".join(lines)
 
 def explain(decision_result: Any, match_info: str = "Jogo") -> str:
-    """Wrapper de conveniência."""
     return generate_explanation(decision_result, match_info)

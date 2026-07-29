@@ -28,7 +28,7 @@ def evaluate_decision(
     confidence: float,
     stake: float = 0.02,
     min_edge: float = 0.03,
-    min_confidence: float = 0.50,
+    min_confidence: float = 0.30,  # Limiar de confiança ajustado para modelos com variância
     max_stake: float = 0.05
 ) -> DecisionResult:
     factors = []
@@ -58,42 +58,46 @@ def evaluate_decision(
     if not conf_passed:
         reasons.append(f"Confiança insuficiente ({confidence:.2f} < mínimo de {min_confidence:.2f})")
         
-    # 3. Avaliação da Stake (Gestão de Risco)
-    stake_passed = 0 < stake <= max_stake
+    # 3. Avaliação e Capping da Stake (Gestão de Risco)
+    final_stake = stake
+    if stake > max_stake:
+        final_stake = max_stake
+        reasons.append(f"Stake ajustada/limitada ao teto máximo de {max_stake:.1%} (Kelly sugeriu {stake:.1%})")
+        stake_passed = True
+    elif stake <= 0:
+        stake_passed = False
+        reasons.append("Stake recomendada é zero")
+    else:
+        stake_passed = True
+
     factors.append(DecisionFactor(
         name="Stake Recomendada",
-        value=stake,
+        value=final_stake,
         threshold=max_stake,
         passed=stake_passed,
         weight=0.2
     ))
-    if stake <= 0:
-        reasons.append("Stake recomendada é zero")
-    elif stake > max_stake:
-        reasons.append(f"Stake excede o limite máximo permitido ({stake:.1%} > {max_stake:.1%})")
 
     # Cálculo da pontuação final (0 a 100)
     score_edge = min(max(edge / (min_edge * 2), 0.0), 1.0) * 50
     score_conf = confidence * 30
-    score_stake = min(stake / max_stake, 1.0) * 20 if stake > 0 else 0
+    score_stake = min(final_stake / max_stake, 1.0) * 20 if final_stake > 0 else 0
     
     total_score = round(score_edge + score_conf + score_stake, 2)
     
-    action = "BET" if (edge_passed and conf_passed and 0 < stake <= max_stake) else "PASS"
+    action = "BET" if (edge_passed and conf_passed and final_stake > 0) else "PASS"
     
     return DecisionResult(
         action=action,
         total_score=total_score,
         edge=edge,
-        recommended_stake=stake,
+        recommended_stake=final_stake,
         factors=factors,
         reasons=reasons
     )
 
 def make_decision(edge: float, confidence: float, stake: float = 0.02, **kwargs) -> DecisionResult:
-    """Wrapper para manter compatibilidade com os testes existentes."""
     return evaluate_decision(edge, confidence, stake, **kwargs)
 
 def decide(edge: float, confidence: float, stake: float = 0.02, **kwargs) -> DecisionResult:
-    """Wrapper de conveniência."""
     return evaluate_decision(edge, confidence, stake, **kwargs)
