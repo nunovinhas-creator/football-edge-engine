@@ -17,7 +17,7 @@ def fetch_enriched_data_from_bsd():
     client = BzzoiroClient()
     
     try:
-        events_resp = client.get("events/?limit=200")
+        events_resp = client.get("events/?limit=200&ordering=event_date")
         events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
         
         if not events_list:
