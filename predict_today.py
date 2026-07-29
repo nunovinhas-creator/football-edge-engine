@@ -107,7 +107,7 @@ def main():
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
     except FileNotFoundError:
-        from research.backtest_engine import generatesynthetic_historical_data
+        from research.backtest_engine import generate_synthetic_historical_data
         df_hist = generate_synthetic_historical_data(300)
 
     line = 12.5
