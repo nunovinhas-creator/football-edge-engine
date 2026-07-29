@@ -39,10 +39,8 @@ def fetch_enriched_data_from_bsd():
                 continue
 
             try:
-                # Converte para timestamp UTC
                 event_dt = pd.to_datetime(raw_date, utc=True)
                 
-                # Se a data for no passado (anterior a hoje/agora)
                 if event_dt < now_utc:
                     print(f"❌ Rejeitado (Passado): {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
                     continue
