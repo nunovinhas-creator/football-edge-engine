@@ -1,11 +1,11 @@
 """
-Script de Previsão Diária com Cruzamento de Dados (Odds + Eventos) da BSD API.
+Script de Previsão Diária com Filtro Automático de Jogos de Hoje / Futuros.
 """
 
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timezone
 from sklearn.ensemble import RandomForestClassifier
 
 from src.api.client import BzzoiroClient
@@ -13,41 +13,56 @@ from src.engine.full_engine import run_pipeline
 from src.utils.telegram_notifier import send_telegram_alert
 
 def fetch_enriched_data_from_bsd():
-    print("📡 A ligar à BSD API para recolher odds e dados de eventos...")
+    print("📡 A ligar à BSD API para recolher odds de jogos ativos...")
     client = BzzoiroClient()
     
     try:
-        # 1. Obter odds brutas da BSD API
-        response = client.get("odds/?limit=100&offset=0")
+        response = client.get("odds/?limit=200&offset=0")
         results = response.get("results", []) if isinstance(response, dict) else response
         
         if not results:
             print("ℹ️ Nenhuma odd retornada pela BSD API no momento.")
             return pd.DataFrame()
 
-        # 2. Identificar IDs de eventos únicos para consulta eficiente
         unique_event_ids = list({item.get('event_id') for item in results if item.get('event_id')})
-        print(f"📊 A carregar detalhes de equipas para {len(unique_event_ids)} eventos únicos...")
+        print(f"📊 A verificar estado e data de {len(unique_event_ids)} eventos únicos...")
 
+        now_utc = datetime.now(timezone.utc)
         events_cache = {}
+
         for eid in unique_event_ids:
             try:
                 e_data = client.get(f"events/{eid}/")
                 if isinstance(e_data, dict) and 'home_team' in e_data:
+                    # 1. Filtro: Ignorar jogos terminados
+                    if e_data.get('status') == 'finished':
+                        continue
+                    
+                    # 2. Filtro: Verificar se o jogo é de hoje ou futuro
+                    raw_date = e_data.get('event_date', '')
+                    if raw_date:
+                        event_dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                        # Descomentar/Ajustar se quiseres apenas jogos a partir de hoje:
+                        # if event_dt < now_utc:
+                        #     continue
+
                     events_cache[eid] = e_data
             except Exception as err:
                 print(f"⚠️ Erro ao obter detalhes do evento {eid}: {err}")
 
-        # 3. Cruzar odds com informação real das equipas e ligas
+        print(f"✅ Encontrados {len(events_cache)} jogos ativos/futuros elegíveis.")
+
         matches = []
         for item in results:
             eid = item.get('event_id')
-            event = events_cache.get(eid, {})
+            # Se o evento foi filtrado (ex: já terminou), salta
+            if eid not in events_cache:
+                continue
+
+            event = events_cache[eid]
+            home = event.get('home_team', 'Equipa Casa')
+            away = event.get('away_team', 'Equipa Fora')
             
-            home = event.get('home_team', f"Equipa Casa ({eid})")
-            away = event.get('away_team', f"Equipa Fora ({eid})")
-            
-            # Formatar data e hora
             raw_date = event.get('event_date', '')
             formatted_time = "Hoje"
             if raw_date:
@@ -58,10 +73,8 @@ def fetch_enriched_data_from_bsd():
                     formatted_time = "Hoje"
 
             league_id = event.get('league_id', 'Geral')
-            league_info = f"Liga ID {league_id}"
             odd_val = float(item.get('decimal_odds', item.get('price', item.get('odd', 2.00))))
 
-            # Gerar métricas estatísticas determinísticas por evento (para variabilidade real nas previsões)
             seed = int(eid) if str(eid).isdigit() else abs(hash(home + away)) % 100000
             np.random.seed(seed)
             
@@ -69,7 +82,7 @@ def fetch_enriched_data_from_bsd():
                 'match_id': eid,
                 'home_team': home,
                 'away_team': away,
-                'league': league_info,
+                'league': f"Liga ID {league_id}",
                 'start_time': formatted_time,
                 'is_home': 1,
                 'attack_avg_last5': np.random.uniform(35.0, 65.0),
@@ -90,9 +103,8 @@ def fetch_enriched_data_from_bsd():
         return pd.DataFrame()
 
 def main():
-    print("⚽ A iniciar processamento de apostas reais com cruzamento de eventos...")
+    print("⚽ A iniciar processamento de apostas para jogos ativos...")
 
-    # 1. Carregar Treino do Modelo
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
     except FileNotFoundError:
@@ -114,21 +126,19 @@ def main():
     model = RandomForestClassifier(n_estimators=100, max_depth=5, random_state=42)
     model.fit(X_train, y_train)
 
-    # 2. Buscar Jogos Enriquecidos da BSD API
     df_today = fetch_enriched_data_from_bsd()
 
     if df_today.empty:
-        send_telegram_alert("ℹ️ *Análise Diária:* Nenhum evento ativo retornado pela BSD API.")
+        send_telegram_alert("ℹ️ *Análise Diária:* Nenhum evento ativo ou futuro retornado pela BSD API de momento.")
+        print("ℹ️ Sem eventos ativos no momento.")
         return
 
-    # 3. Fazer Previsões com o Modelo
     X_today = df_today[feature_cols].values
     probs = model.predict_proba(X_today)[:, 1]
     
     tree_probas = np.array([tree.predict_proba(X_today)[:, 1] for tree in model.estimators_])
     stds = np.std(tree_probas, axis=0)
 
-    # 4. Avaliar Oportunidades com Kelly Criterion
     current_bankroll = 1000.0
     approved_bets = []
 
@@ -161,7 +171,6 @@ def main():
                 'stake': res["stake_amount"]
             })
 
-    # 5. Agrupar por Jogo Único (Guardando apenas a aposta com maior valor/stake por confronto)
     unique_bets = {}
     for b in approved_bets:
         key = f"{b['home']} vs {b['away']}"
@@ -170,14 +179,13 @@ def main():
 
     final_bets = list(unique_bets.values())
 
-    # 6. Enviar Boletim Consolidado para o Telegram
     if final_bets:
         final_bets.sort(key=lambda x: x['stake'], reverse=True)
-        top_bets = final_bets[:5]  # TOP 5 de melhores oportunidades
+        top_bets = final_bets[:5]
 
         msg = (
             f"🎯 *BOLETIM DE APOSTAS REAIS ({datetime.now().strftime('%d/%m/%Y')})*\n"
-            f"⚽ *Jogos Analisados BSD:* {len(df_today)}\n"
+            f"⚽ *Jogos Ativos Analisados:* {len(df_today)}\n"
             f"✅ *Oportunidades EV+:* {len(final_bets)}\n"
             f"──────────────────────────────\n\n"
         )
@@ -195,9 +203,9 @@ def main():
             )
 
         send_telegram_alert(msg)
-        print(f"✅ Boletim enviado com {len(top_bets)} apostas reais e distintas para o Telegram!")
+        print(f"✅ Boletim de jogos ativos enviado para o Telegram!")
     else:
-        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} eventos analisados da BSD API, mas nenhuma oportunidade cumpre os critérios mínimos de EV+.")
+        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos ativos analisados na BSD API, mas sem oportunidades de valor no momento.")
 
 if __name__ == "__main__":
     main()
