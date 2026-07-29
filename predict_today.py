@@ -1,5 +1,5 @@
 """
-Script de Previsão Diária com Procura Direta de Eventos Futuros/Ativos na BSD API.
+Script de Previsão Diária com Filtro Rigoroso de Timestamp (Apenas Jogos Futuros/Hoje).
 """
 
 import os
@@ -13,56 +13,67 @@ from src.engine.full_engine import run_pipeline
 from src.utils.telegram_notifier import send_telegram_alert
 
 def fetch_enriched_data_from_bsd():
-    print("📡 A ligar à BSD API para procurar eventos futuros/ativos...")
+    print("📡 A ligar à BSD API para procurar eventos estritamente futuros/de hoje...")
     client = BzzoiroClient()
     
     try:
-        # 1. Procurar lista de eventos na BSD API
-        events_resp = client.get("events/?limit=100&ordering=-event_date")
+        # Obter eventos da API
+        events_resp = client.get("events/?limit=200")
         events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
         
         if not events_list:
-            print("ℹ️ Nenhum evento retornado no endpoint /events/.")
+            print("ℹ️ Nenhum evento retornado.")
             return pd.DataFrame()
 
-        # 2. Filtrar eventos ativos/futuros (excluir terminados)
-        active_events = [e for e in events_list if e.get('status') != 'finished']
-        
-        # Se a ordenação não devolver futuros imediatamente, filtra por status ou data
-        if not active_events:
-            print("ℹ️ A tentar rota alternada de eventos futuros...")
-            events_resp = client.get("events/?limit=100")
-            events_list = events_resp.get("results", []) if isinstance(events_resp, dict) else events_resp
-            active_events = [e for e in events_list if e.get('status') != 'finished']
+        now_utc = datetime.now(timezone.utc)
+        active_future_events = []
 
-        print(f"📊 Encontrados {len(active_events)} eventos ativos/futuros.")
+        for e in events_list:
+            # 1. Ignorar por status conhecido de terminação
+            status = str(e.get('status', '')).lower()
+            if status in ['finished', 'ft', 'canceled', 'postponed', 'cancelled']:
+                continue
 
-        if not active_events:
+            # 2. VALIDAÇÃO TEMPORAL ESTRITA: O jogo TEM de ser hoje ou no futuro
+            raw_date = e.get('event_date')
+            if not raw_date:
+                continue
+
+            try:
+                event_dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                # Se a data do jogo já passou, salta fora!
+                if event_dt < now_utc:
+                    continue
+            except Exception:
+                continue
+
+            active_future_events.append(e)
+
+        print(f"📊 Encontrados {len(active_future_events)} jogos válidos no futuro/hoje.")
+
+        if not active_future_events:
             return pd.DataFrame()
 
-        # 3. Mapear jogos e associar odds
         matches = []
-        for event in active_events:
+        for event in active_future_events:
             eid = event.get('id')
             home = event.get('home_team', 'Equipa Casa')
             away = event.get('away_team', 'Equipa Fora')
             
             raw_date = event.get('event_date', '')
-            formatted_time = "Hoje"
-            if raw_date:
-                try:
-                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                    formatted_time = dt.strftime('%d/%m às %H:%HM')
-                except Exception:
-                    formatted_time = "Hoje"
+            try:
+                dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                formatted_time = dt.strftime('%d/%m às %H:%HM')
+            except Exception:
+                formatted_time = "Hoje"
 
             league_id = event.get('league_id', 'Geral')
             
-            # Tentar obter odds do evento (ou usar odd padrão de mercado se não houver cotação ativa)
+            # Buscar odd real do evento
             try:
                 odds_resp = client.get(f"odds/?event_id={eid}")
                 odds_results = odds_resp.get("results", []) if isinstance(odds_resp, dict) else odds_resp
-                odd_val = float(odds_results[0].get('decimal_odds', 2.05)) if odds_results else 2.00
+                odd_val = float(odds_results[0].get('decimal_odds', 2.00)) if odds_results else 2.00
             except Exception:
                 odd_val = 2.00
 
@@ -90,11 +101,11 @@ def fetch_enriched_data_from_bsd():
         return pd.DataFrame(matches)
 
     except Exception as e:
-        print(f"❌ Erro ao comunicar com a BSD API: {e}")
+        print(f"❌ Erro na BSD API: {e}")
         return pd.DataFrame()
 
 def main():
-    print("⚽ A iniciar processamento de apostas reais em eventos ativos...")
+    print("⚽ A processar apostas para jogos futuros de hoje...")
 
     try:
         df_hist = pd.read_csv('research/pressure_shots/features_v2.csv')
@@ -120,8 +131,8 @@ def main():
     df_today = fetch_enriched_data_from_bsd()
 
     if df_today.empty:
-        send_telegram_alert("ℹ️ *Análise Diária:* Nenhum evento ativo retornado pela BSD API de momento.")
-        print("ℹ️ Sem eventos ativos no momento.")
+        send_telegram_alert("ℹ️ *Análise Diária:* Sem jogos futuros agendados de momento na BSD API.")
+        print("ℹ️ Sem eventos futuros agendados.")
         return
 
     X_today = df_today[feature_cols].values
@@ -176,7 +187,7 @@ def main():
 
         msg = (
             f"🎯 *BOLETIM DE APOSTAS REAIS ({datetime.now().strftime('%d/%m/%Y')})*\n"
-            f"⚽ *Jogos Ativos Analisados:* {len(df_today)}\n"
+            f"⚽ *Jogos Futuros Analisados:* {len(df_today)}\n"
             f"✅ *Oportunidades EV+:* {len(final_bets)}\n"
             f"──────────────────────────────\n\n"
         )
@@ -194,9 +205,9 @@ def main():
             )
 
         send_telegram_alert(msg)
-        print("✅ Boletim enviado para o Telegram com sucesso!")
+        print("✅ Boletim enviado com sucesso!")
     else:
-        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos ativos analisados, mas nenhuma aposta cumpre os critérios de EV+.")
+        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos futuros analisados, mas nenhuma aposta cumpre os critérios de EV+.")
 
 if __name__ == "__main__":
     main()
