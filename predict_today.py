@@ -1,11 +1,11 @@
 """
-Script de Previsão Diária com Logs de Validação Temporal no Runner.
+Script de Previsão Diária com Janela Temporal Estrita (Próximos 3 Dias).
 """
 
 import os
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta
 from sklearn.ensemble import RandomForestClassifier
 
 from src.api.client import BzzoiroClient
@@ -25,7 +25,10 @@ def fetch_enriched_data_from_bsd():
             return pd.DataFrame()
 
         now_utc = pd.Timestamp.now(tz='UTC')
-        print(f"🕒 [UTC ATUAL NO SERVIDOR]: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        max_future_date = now_utc + pd.Timedelta(days=3)
+        
+        print(f"🕒 UTC Atual: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"📅 Janela Máxima: Até {max_future_date.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
         active_future_events = []
 
@@ -35,25 +38,23 @@ def fetch_enriched_data_from_bsd():
             raw_date = e.get('event_date') or e.get('date') or e.get('start_time')
             
             if not raw_date:
-                print(f"⚠️ [SEM DATA] {home} vs {away}")
                 continue
 
             try:
                 event_dt = pd.to_datetime(raw_date, utc=True)
                 
-                if event_dt < now_utc:
-                    print(f"❌ Rejeitado (Passado): {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
-                    continue
+                # JANELA ESTRITA: O jogo deve ser no futuro E dentro dos próximos 3 dias
+                if now_utc <= event_dt <= max_future_date:
+                    print(f"✅ DENTRO DA JANELA: {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
+                    active_future_events.append((e, event_dt))
                 else:
-                    print(f"✅ Aceite (Futuro): {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
+                    print(f"❌ FORA DA JANELA: {home} vs {away} | Data: {event_dt.strftime('%Y-%m-%d %H:%M')}")
                     
             except Exception as err:
-                print(f"⚠️ Erro ao parsing da data '{raw_date}' em {home} vs {away}: {err}")
+                print(f"⚠️ Erro no parsing de data '{raw_date}': {err}")
                 continue
 
-            active_future_events.append((e, event_dt))
-
-        print(f"\n📊 Total Retornados: {len(events_list)} | Mantidos (Futuros): {len(active_future_events)}")
+        print(f"\n📊 Recebidos: {len(events_list)} | Válidos nos próximos 3 dias: {len(active_future_events)}")
 
         if not active_future_events:
             return pd.DataFrame()
@@ -63,7 +64,7 @@ def fetch_enriched_data_from_bsd():
             eid = event.get('id')
             home = event.get('home_team', 'Equipa Casa')
             away = event.get('away_team', 'Equipa Fora')
-            formatted_time = event_dt.strftime('%d/%m às %H:%HM')
+            formatted_time = event_dt.strftime('%d/%m/%Y às %H:%HM')
             league_id = event.get('league_id', 'Geral')
             
             try:
@@ -127,8 +128,8 @@ def main():
     df_today = fetch_enriched_data_from_bsd()
 
     if df_today.empty:
-        send_telegram_alert("ℹ️ *Análise Diária:* Sem jogos futuros agendados de momento na BSD API.")
-        print("ℹ️ Sem eventos futuros agendados.")
+        send_telegram_alert("ℹ️ *Análise Diária:* Sem jogos agendados para os próximos 3 dias na BSD API.")
+        print("ℹ️ Sem eventos no intervalo de 3 dias.")
         return
 
     X_today = df_today[feature_cols].values
@@ -183,7 +184,7 @@ def main():
 
         msg = (
             f"🎯 *BOLETIM DE APOSTAS REAIS ({datetime.now().strftime('%d/%m/%Y')})*\n"
-            f"⚽ *Jogos Futuros Analisados:* {len(df_today)}\n"
+            f"⚽ *Jogos Reais Analisados (Próx. 3 Dias):* {len(df_today)}\n"
             f"✅ *Oportunidades EV+:* {len(final_bets)}\n"
             f"──────────────────────────────\n\n"
         )
@@ -203,7 +204,7 @@ def main():
         send_telegram_alert(msg)
         print("✅ Boletim enviado para o Telegram!")
     else:
-        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos futuros analisados, mas nenhuma aposta cumpre os critérios de EV+.")
+        send_telegram_alert(f"ℹ️ *Análise Concluída:* {len(df_today)} jogos analisados, mas nenhuma aposta cumpre os critérios de EV+.")
 
 if __name__ == "__main__":
     main()
