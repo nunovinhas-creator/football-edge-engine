@@ -12,6 +12,7 @@ from src.live.engine import LiveGoalEngine
 from src.engine.simulation import MonteCarloSimulator
 from src.engine.decision import DecisionEngine
 from src.live.features.goal_window import GoalWindowPredictor
+from src.model.ml_predictor import LiveMLPredictor
 
 console = Console()
 
@@ -21,6 +22,7 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     sim_engine = MonteCarloSimulator(n_simulations=1000)
     dec_engine = DecisionEngine()
     window_predictor = GoalWindowPredictor()
+    ml_predictor = LiveMLPredictor()
 
     # Cálculos
     live_analysis = live_engine.predict_next_goal_probability(match_state)
@@ -34,8 +36,9 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     )
     bet_rec = dec_engine.evaluate_bet("Over 1.5", sim_res.over_15_prob, bookie_over15_odd)
     goal_window = window_predictor.predict_window(match_state, live_analysis['pressure'])
+    ml_res = ml_predictor.predict(match_state)
 
-    # Tabela Live Match
+    # Tabela Live Match Engine
     metrics_table = Table(box=box.SIMPLE, show_header=False, expand=True)
     metrics_table.add_column("Metric", style="bold cyan")
     metrics_table.add_column("Value", style="bold yellow")
@@ -44,7 +47,7 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     metrics_table.add_row("🔥 Pressure Index", f"{live_analysis['pressure']} / 100")
     metrics_table.add_row("👑 Dominance Index", f"{live_analysis['dominance_index']} / 100")
     metrics_table.add_row("⚽ Estimated xG (10m)", f"{live_analysis['estimated_xg_10m']}")
-    metrics_table.add_row("🎯 Goal Prob (Next 10m)", f"{live_analysis['next_goal_probability']}%")
+    metrics_table.add_row("🤖 XGBoost Goal Prob", f"[bold green]{ml_res.goal_probability}%[/bold green] ({ml_res.model_used})")
     metrics_table.add_row("⏱️ GOAL WINDOW AI", f"[bold green]{goal_window.predicted_window}[/bold green] ({goal_window.intensity})")
 
     # Tabela Simulação
@@ -69,19 +72,19 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     dec_table.add_row("Action", f"[bold green]{bet_rec.action}[/bold green]" if "BET" in bet_rec.action else f"[bold red]{bet_rec.action}[/bold red]")
 
     # Layout
-    console.print(Panel(f"[bold white]⚽ {home_team} {score} {away_team}[/bold white] | [italic yellow]Football Edge Engine Live v2.0[/italic yellow]", style="bold blue", box=box.DOUBLE))
-    console.print(Panel(metrics_table, title="[bold cyan]1. Live Match Engine & Goal Window AI[/bold cyan]", box=box.ROUNDED))
+    console.print(Panel(f"[bold white]⚽ {home_team} {score} {away_team}[/bold white] | [italic yellow]Football Edge Engine Live v3.0 (ML Powered)[/italic yellow]", style="bold blue", box=box.DOUBLE))
+    console.print(Panel(metrics_table, title="[bold cyan]1. Live Match Engine & ML Inference (v3.0)[/bold cyan]", box=box.ROUNDED))
     console.print(Panel(sim_table, title="[bold magenta]2. Monte Carlo Simulation Engine[/bold magenta]", box=box.ROUNDED))
-    console.print(Panel(dec_table, title="[bold green]3. Decision Engine[/bold green]", box=box.ROUNDED))
+    console.print(Panel(dec_table, title="[bold green]3. Decision Engine (Kelly & Edge)[/bold green]", box=box.ROUNDED))
 
 if __name__ == "__main__":
     state = LiveMatchState(
-        minute=72,
-        possession=65.0,
-        dangerous_attacks_10m=14,
+        minute=75,
+        possession=60.0,
+        dangerous_attacks_10m=12,
         shots_on_target_10m=4,
         shots_10m=8,
-        corners_10m=5,
+        corners_10m=3,
         previous_pressure=55.0
     )
     render_live_dashboard("Benfica", "Porto", "1-0", state, bookie_over15_odd=2.15)
