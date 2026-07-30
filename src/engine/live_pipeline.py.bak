@@ -7,26 +7,13 @@ from src.live.providers.mock_odds_provider import MockOddsProvider
 
 class LivePipeline:
 
-    def __init__(
-        self,
-        match_provider=None,
-        odds_provider=None
-    ):
+    def __init__(self):
 
         self.live_engine = LiveGoalEngine()
         self.simulator = MonteCarloSimulator()
 
-        self.match_provider = (
-            match_provider
-            if match_provider
-            else MockMatchProvider()
-        )
-
-        self.odds_provider = (
-            odds_provider
-            if odds_provider
-            else MockOddsProvider()
-        )
+        self.match_provider = MockMatchProvider()
+        self.odds_provider = MockOddsProvider()
 
     def calculate_dynamic_lambda(self, live_result):
 
