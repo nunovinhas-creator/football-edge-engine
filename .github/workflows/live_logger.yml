@@ -1,0 +1,40 @@
+name: Automatic Live Goal Logger & Engine
+
+on:
+  schedule:
+    # Corre a cada 5 minutos de forma 100% automática na nuvem
+    - cron: '*/5 * * * *'
+  workflow_dispatch: # Permite também disparar manualmente se quiseres testar
+
+jobs:
+  run-logger:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 1. Checkout do Repositório
+        uses: actions/checkout@v3
+
+      - name: 2. Configurar Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: 3. Instalar Dependências
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: 4. Executar Monitorização e Logger
+        env:
+          BSD_API_KEY: ${{ secrets.BSD_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python live_monitor.py
+
+      - name: 5. Guardar Alterações na Base de Dados (Auto-Commit)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/live_history.db
+          git diff --quiet && git diff --staged --quiet || (git commit -m "chore(logger): auto-update live history db [skip ci]" && git push)

@@ -1,54 +1,62 @@
 """
-Script Principal de Monitorização Live de Golos Iminentes.
+Script Principal de Monitorização e Logging Automático em Tempo Real.
 """
 
-import time
+import os
+import sys
+from pathlib import Path
+
+# Garantir sys.path correto
+root_dir = Path(__file__).resolve().parent
+if str(root_dir) not in sys.path:
+    sys.path.insert(0, str(root_dir))
+
 from src.api.live_fetcher import BSDLiveFetcher
 from src.live.engine import LiveGoalEngine
-from src.utils.telegram_notifier import send_telegram_alert
+from src.backtest.logger import init_db, log_snapshot, update_outcomes
 
 def run_live_pipeline():
-    print("\n🚀 A iniciar varredura em tempo real dos jogos...")
+    init_db()
+    print("\n🚀 [AUTOMATIC RUN] A iniciar varredura de jogos em direto...")
     
-    fetcher = BSDLiveFetcher()
+    try:
+        fetcher = BSDLiveFetcher()
+    except Exception as e:
+        print(f"⚠️ Erro ao inicializar o fetcher (verificar credenciais/mock): {e}")
+        return
+
     engine = LiveGoalEngine()
-    
     events = fetcher.get_live_events()
     
     if not events:
-        print("ℹ️ Nenhum jogo a decorrer neste momento na BSD API.")
+        print("ℹ️ Nenhum jogo a decorrer neste momento.")
         return
 
-    alerts_sent = 0
+    print(f"⚽ {len(events)} jogos em direto identificados.")
 
     for event in events:
         match_data = fetcher.parse_live_metrics_for_engine(event)
         
-        # Calcula a probabilidade de golo nos próximos 15 minutos
-        p_goal_15m = engine.predict_next_goal_probability(match_data)
+        # 1. Registar o Snapshot na Base de Dados do Backtest
+        log_snapshot(match_data)
         
+        # 2. Atualizar se existiu golo nas entradas registadas há ~15 minutos
+        # (Consideramos se o placard mudou em relação ao snapshot anterior)
+        goal_just_happened = match_data.get('goal_occurred_recently', False)
+        update_outcomes(
+            match_id=str(match_data['match_id']),
+            current_minute=match_data['current_minute'],
+            goal_occurred=goal_just_happened
+        )
+
+        # 3. Previsão do Motor
+        p_goal_15m = engine.predict_next_goal_probability(match_data)
         home = match_data['home_team']
         away = match_data['away_team']
         min_curr = match_data['current_minute']
         score = f"{match_data['home_score']}-{match_data['away_score']}"
         
         print(f"🏟️ {home} {score} {away} ({min_curr}') -> P(Golo 15m): {p_goal_15m*100:.1f}%")
-        
-        # Threshold de Alerta Live: Dispara se a probabilidade de golo for >= 65%
-        if p_goal_15m >= 0.65:
-            msg = (
-                f"🔥 *ALERTA LIVE: PRESSÃO EXTREMA / GOLO IMINENTE*\n"
-                f"⚽ *{home} vs {away}*\n"
-                f"⏱️ *Resultado / Minuto:* {score} (`{min_curr}'`)\n"
-                f"📊 *Prob. Golo (Próx. 15m):* `{p_goal_15m*100:.1f}%`\n"
-                f"📈 *Ataques Perigosos (10m):* `{match_data['dangerous_attacks_10m']}`\n"
-                f"🎯 *Remates no Alvo (10m):* `{match_data['shots_on_target_10m']}`\n"
-                f"💡 *Recomendação:* Mercado Over Golo Live / Próximo Golo\n"
-            )
-            send_telegram_alert(msg)
-            alerts_sent += 1
-
-    print(f"✅ Varredura concluída. Alertas enviados: {alerts_sent}\n")
 
 if __name__ == "__main__":
     run_live_pipeline()
