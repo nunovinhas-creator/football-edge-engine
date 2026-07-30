@@ -18,3 +18,4 @@ class LiveMatchState:
 
     previous_pressure: float = 0.0
     dangerous_attacks_10m: int = 0
+    shots_10m: int = 0
