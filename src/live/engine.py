@@ -9,8 +9,8 @@ class LiveGoalEngine:
         """Calcula a pressão ofensiva recente (últimos 10 min)."""
         attack_weight = getattr(match, "dangerous_attacks_10m", match.get("dangerous_attacks_10m", 0) if isinstance(match, dict) else 0) * 1.2
         shot_weight = getattr(match, "shots_10m", 0) * 2.5
-        target_weight = match.shots_on_target_10m * 4.0
-        corner_weight = match.corners_10m * 1.5
+        target_weight = getattr(match, "shots_on_target_10m", 0) * 4.0
+        corner_weight = getattr(match, "corners_10m", 0) * 1.5
         
         raw_pressure = attack_weight + shot_weight + target_weight + corner_weight
         smoothed_pressure = (raw_pressure * 0.7) + (match.previous_pressure * 0.3)
@@ -22,17 +22,17 @@ class LiveGoalEngine:
         Não depende só de posse de bola, mas do controlo territorial e perigo criado.
         """
         possession_factor = match.possession * 0.3
-        attack_factor = min((match.dangerous_attacks_10m / 15.0) * 35.0, 35.0)
-        shot_factor = min((match.shots_10m / 8.0) * 35.0, 35.0)
+        attack_factor = min((getattr(match, "dangerous_attacks_10m", 0) / 15.0) * 35.0, 35.0)
+        shot_factor = min((getattr(match, "shots_10m", 0) / 8.0) * 35.0, 35.0)
         
         dominance = possession_factor + attack_factor + shot_factor
         return round(min(dominance, 100.0), 1)
 
     def estimate_live_xg(self, match: LiveMatchState) -> float:
         """Estima o xG acumulado/esperado com base no volume de remates e perigo recente."""
-        shot_xg = (match.shots_10m - match.shots_on_target_10m) * 0.08
-        target_xg = match.shots_on_target_10m * 0.32
-        corner_xg = match.corners_10m * 0.05
+        shot_xg = (getattr(match, "shots_10m", 0) - getattr(match, "shots_on_target_10m", 0)) * 0.08
+        target_xg = getattr(match, "shots_on_target_10m", 0) * 0.32
+        corner_xg = getattr(match, "corners_10m", 0) * 0.05
         
         estimated_10m_xg = shot_xg + target_xg + corner_xg
         return round(estimated_10m_xg, 2)
