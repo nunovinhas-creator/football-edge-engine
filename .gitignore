@@ -4,3 +4,16 @@ __pycache__/
 .venv/
 .env
 data/
+
+# ML Models & Heavy Artifacts
+*.pkl
+*.joblib
+*.onnx
+models_data/
+research/pressure_shots/models/*.pkl
+
+# Environment & Logs
+.env
+*.log
+__pycache__/
+.pytest_cache/

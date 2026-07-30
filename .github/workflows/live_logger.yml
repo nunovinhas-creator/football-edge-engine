@@ -30,7 +30,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python live_monitor.py
+          python main.py --mode monitor
 
       - name: 5. Guardar Alterações na Base de Dados (Auto-Commit)
         run: |
