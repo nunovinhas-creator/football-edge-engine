@@ -13,6 +13,7 @@ from src.engine.simulation import MonteCarloSimulator
 from src.engine.decision import DecisionEngine
 from src.live.features.goal_window import GoalWindowPredictor
 from src.model.ml_predictor import LiveMLPredictor
+from src.engine.live_decision import evaluate_live_market
 
 console = Console()
 
@@ -40,6 +41,12 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     goal_window = window_predictor.predict_window(match_state, live_analysis['pressure'])
     ml_res = ml_predictor.predict(match_state)
 
+    live_bet = evaluate_live_market(
+        probability_pct=live_analysis['next_goal_probability'],
+        bookie_odd=bookie_over15_odd,
+        market='NEXT GOAL'
+    )
+
     # Tabela Live Match Engine
     metrics_table = Table(box=box.SIMPLE, show_header=False, expand=True)
     metrics_table.add_column("Metric", style="bold cyan")
@@ -51,6 +58,9 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     metrics_table.add_row("⚽ Estimated xG (10m)", f"{live_analysis['estimated_xg_10m']}")
     metrics_table.add_row("🤖 XGBoost Goal Prob", f"[bold green]{ml_res.goal_probability}%[/bold green] ({ml_res.model_used})")
     metrics_table.add_row("⏱️ GOAL WINDOW AI", f"[bold green]{goal_window.predicted_window}[/bold green] ({goal_window.intensity})")
+    metrics_table.add_row("🎯 Next Goal Probability", f"{live_analysis['next_goal_probability']}%")
+    metrics_table.add_row("💰 Live Market Edge", f"{live_bet.edge}%")
+    metrics_table.add_row("🤖 Live Decision", f"{live_bet.action}")
 
     metrics_table.add_row(
         "🎯 Next Goal Probability",
