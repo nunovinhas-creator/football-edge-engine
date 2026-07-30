@@ -17,7 +17,3 @@ class LiveMatchState:
     possession: float = 50.0
 
     previous_pressure: float = 0.0
-    dangerous_attacks_10m: int = 0
-    shots_10m: int = 0
-    shots_on_target_10m: int = 0
-    corners_10m: int = 0
