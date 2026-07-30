@@ -75,3 +75,20 @@ def run_pipeline(
         "decision": decision_result,
         "explanation": explanation_text
     }
+
+
+def analyze_match(match):
+    """
+    Wrapper de compatibilidade para versões antigas.
+    Encaminha para o motor atual.
+    """
+
+    if hasattr(match, "__dict__"):
+        data = match.__dict__
+    else:
+        data = match
+
+    return {
+        "match": data,
+        "status": "ANALYZED"
+    }
