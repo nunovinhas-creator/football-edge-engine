@@ -27,6 +27,7 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     # Cálculos
     analysis = pipeline.evaluate(match_state)
     live_analysis = analysis["live"]
+    pipeline_sim = analysis["simulation"]
     h_score, a_score = map(int, score.split("-"))
     sim_res = sim_engine.run_match_simulation(
         current_minute=match_state.minute,
@@ -51,6 +52,16 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     metrics_table.add_row("🤖 XGBoost Goal Prob", f"[bold green]{ml_res.goal_probability}%[/bold green] ({ml_res.model_used})")
     metrics_table.add_row("⏱️ GOAL WINDOW AI", f"[bold green]{goal_window.predicted_window}[/bold green] ({goal_window.intensity})")
 
+    metrics_table.add_row(
+        "🎯 Next Goal Probability",
+        f"[bold green]{live_analysis['next_goal_probability']}%[/bold green]"
+    )
+
+    metrics_table.add_row(
+        "🤖 Live Recommendation",
+        f"[bold yellow]{live_analysis['recommendation']}[/bold yellow]"
+    )
+
     # Tabela Simulação
     sim_table = Table(box=box.SIMPLE, show_header=False, expand=True)
     sim_table.add_column("Market", style="bold magenta")
@@ -59,7 +70,25 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     sim_table.add_row("Over 1.5 Prob", f"{sim_res.over_15_prob}%")
     sim_table.add_row("Over 2.5 Prob", f"{sim_res.over_25_prob}%")
     sim_table.add_row("BTTS Prob", f"{sim_res.btts_prob}%")
-    sim_table.add_row("Expected Final xG", f"{sim_res.expected_goals_home} - {sim_res.expected_goals_away}")
+    sim_table.add_row(
+        "Expected Final xG",
+        f"{pipeline_sim['expected_home_goals']} - {pipeline_sim['expected_away_goals']}"
+    )
+
+    sim_table.add_row(
+        "Pipeline Over 1.5",
+        f"{pipeline_sim['over_15']}%"
+    )
+
+    sim_table.add_row(
+        "Pipeline Over 2.5",
+        f"{pipeline_sim['over_25']}%"
+    )
+
+    sim_table.add_row(
+        "Pipeline BTTS",
+        f"{pipeline_sim['btts']}%"
+    )
 
     # Tabela Decisão
     dec_table = Table(box=box.SIMPLE, show_header=False, expand=True)
