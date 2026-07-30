@@ -1,0 +1,25 @@
+"""
+Pressure Index Engine
+Calcula a intensidade ofensiva de uma equipa (0-100).
+"""
+
+class PressureIndex:
+
+    def calculate(
+        self,
+        dangerous_attacks: int,
+        shots_on_target: int,
+        shots: int,
+        corners: int,
+        possession: float
+    ) -> float:
+
+        score = (
+            dangerous_attacks * 3.0 +
+            shots_on_target * 8.0 +
+            shots * 4.0 +
+            corners * 2.5 +
+            possession * 0.25
+        )
+
+        return min(round(score, 2), 100.0)
