@@ -7,7 +7,7 @@ class LiveGoalEngine:
 
     def calculate_pressure(self, match: LiveMatchState) -> float:
         """Calcula a pressão ofensiva recente (últimos 10 min)."""
-        attack_weight = match.dangerous_attacks_10m * 1.2
+        attack_weight = getattr(match, "dangerous_attacks_10m", match.get("dangerous_attacks_10m", 0) if isinstance(match, dict) else 0) * 1.2
         shot_weight = match.shots_10m * 2.5
         target_weight = match.shots_on_target_10m * 4.0
         corner_weight = match.corners_10m * 1.5
