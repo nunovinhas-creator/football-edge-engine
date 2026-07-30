@@ -8,7 +8,7 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 from src.models.live_state import LiveMatchState
-from src.live.engine import LiveGoalEngine
+from src.engine.live_pipeline import LivePipeline
 from src.engine.simulation import MonteCarloSimulator
 from src.engine.decision import DecisionEngine
 from src.live.features.goal_window import GoalWindowPredictor
@@ -18,14 +18,15 @@ console = Console()
 
 def render_live_dashboard(home_team: str, away_team: str, score: str, match_state: LiveMatchState, bookie_over15_odd: float):
     # Motores
-    live_engine = LiveGoalEngine()
+    pipeline = LivePipeline()
     sim_engine = MonteCarloSimulator(n_simulations=1000)
     dec_engine = DecisionEngine()
     window_predictor = GoalWindowPredictor()
     ml_predictor = LiveMLPredictor()
 
     # Cálculos
-    live_analysis = live_engine.predict_next_goal_probability(match_state)
+    analysis = pipeline.evaluate(match_state)
+    live_analysis = analysis["live"]
     h_score, a_score = map(int, score.split("-"))
     sim_res = sim_engine.run_match_simulation(
         current_minute=match_state.minute,
