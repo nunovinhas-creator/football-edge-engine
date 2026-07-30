@@ -1,0 +1,80 @@
+import os
+import requests
+
+from src.models.live_state import LiveMatchState
+
+
+class APIMatchProvider:
+
+    BASE_URL = "https://sports.bzzoiro.com"
+
+
+    def __init__(self):
+
+        self.api_key = os.getenv(
+            "BSD_API_KEY"
+        )
+
+        if not self.api_key:
+            raise RuntimeError(
+                "BSD_API_KEY missing"
+            )
+
+
+    def headers(self):
+
+        return {
+            "Authorization":
+            f"Token {self.api_key}"
+        }
+
+
+    def get_live_matches(self):
+
+        r = requests.get(
+            f"{self.BASE_URL}/api/v2/events/live/",
+            headers=self.headers(),
+            timeout=10
+        )
+
+        r.raise_for_status()
+
+        return r.json()
+
+
+    def get_live_match(self, match_id):
+
+        r = requests.get(
+            f"{self.BASE_URL}/api/v2/events/{match_id}/?full=true",
+            headers=self.headers(),
+            timeout=10
+        )
+
+        r.raise_for_status()
+
+        data = r.json()
+
+
+        return LiveMatchState(
+
+            minute=data.get(
+                "current_minute",
+                0
+            ),
+
+            home_xg_last5=1.0,
+
+            away_conceded_xg_last5=1.0,
+
+            home_style="balanced",
+
+            dangerous_attacks_10m=0,
+
+            shots_on_target_10m=0,
+
+            shots_10m=0,
+
+            corners_10m=0,
+
+            possession=50.0
+        )
