@@ -51,3 +51,48 @@ class DecisionEngine:
             kelly_stake_pct=round(suggested_stake, 2),
             action=action
         )
+
+
+
+
+def make_decision(edge: float, ev: float):
+    """
+    Compatibilidade com testes e módulos antigos.
+
+    edge:
+        Edge percentual
+
+    ev:
+        Expected Value percentual
+    """
+
+    if edge >= 5 and ev > 0:
+        return "BET 🔥"
+
+    if edge > 0 and ev > 0:
+        return "WAIT ⚠️"
+
+    return "PASS ❄️"
+
+
+def evaluate_decision(edge: float, ev: float):
+    """
+    Compatibilidade com versões antigas do engine.
+    Recebe edge e EV e devolve decisão simples.
+    """
+
+    if edge >= 5 and ev > 0:
+        return "BET 🔥"
+
+    if edge > 0:
+        return "WAIT ⚠️"
+
+    return "PASS ❄️"
+
+
+def make_decision(edge: float, ev: float, bookie_odd=None):
+    """
+    Compatibilidade com testes antigos.
+    """
+
+    return evaluate_decision(edge, ev)

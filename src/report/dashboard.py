@@ -8,24 +8,27 @@ from rich.panel import Panel
 from rich.table import Table
 from rich import box
 from src.models.live_state import LiveMatchState
-from src.live.engine import LiveGoalEngine
+from src.engine.live_pipeline import LivePipeline
 from src.engine.simulation import MonteCarloSimulator
 from src.engine.decision import DecisionEngine
 from src.live.features.goal_window import GoalWindowPredictor
 from src.model.ml_predictor import LiveMLPredictor
+from src.engine.live_decision import evaluate_live_market
 
 console = Console()
 
 def render_live_dashboard(home_team: str, away_team: str, score: str, match_state: LiveMatchState, bookie_over15_odd: float):
     # Motores
-    live_engine = LiveGoalEngine()
+    pipeline = LivePipeline()
     sim_engine = MonteCarloSimulator(n_simulations=1000)
     dec_engine = DecisionEngine()
     window_predictor = GoalWindowPredictor()
     ml_predictor = LiveMLPredictor()
 
     # Cálculos
-    live_analysis = live_engine.predict_next_goal_probability(match_state)
+    analysis = pipeline.evaluate(match_state)
+    live_analysis = analysis["live"]
+    pipeline_sim = analysis["simulation"]
     h_score, a_score = map(int, score.split("-"))
     sim_res = sim_engine.run_match_simulation(
         current_minute=match_state.minute,
@@ -38,6 +41,12 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     goal_window = window_predictor.predict_window(match_state, live_analysis['pressure'])
     ml_res = ml_predictor.predict(match_state)
 
+    live_bet = evaluate_live_market(
+        probability_pct=live_analysis['next_goal_probability'],
+        bookie_odd=bookie_over15_odd,
+        market='NEXT GOAL'
+    )
+
     # Tabela Live Match Engine
     metrics_table = Table(box=box.SIMPLE, show_header=False, expand=True)
     metrics_table.add_column("Metric", style="bold cyan")
@@ -49,6 +58,19 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     metrics_table.add_row("⚽ Estimated xG (10m)", f"{live_analysis['estimated_xg_10m']}")
     metrics_table.add_row("🤖 XGBoost Goal Prob", f"[bold green]{ml_res.goal_probability}%[/bold green] ({ml_res.model_used})")
     metrics_table.add_row("⏱️ GOAL WINDOW AI", f"[bold green]{goal_window.predicted_window}[/bold green] ({goal_window.intensity})")
+    metrics_table.add_row("🎯 Next Goal Probability", f"{live_analysis['next_goal_probability']}%")
+    metrics_table.add_row("💰 Live Market Edge", f"{live_bet.edge}%")
+    metrics_table.add_row("🤖 Live Decision", f"{live_bet.action}")
+
+    metrics_table.add_row(
+        "🎯 Next Goal Probability",
+        f"[bold green]{live_analysis['next_goal_probability']}%[/bold green]"
+    )
+
+    metrics_table.add_row(
+        "🤖 Live Recommendation",
+        f"[bold yellow]{live_analysis['recommendation']}[/bold yellow]"
+    )
 
     # Tabela Simulação
     sim_table = Table(box=box.SIMPLE, show_header=False, expand=True)
@@ -58,7 +80,25 @@ def render_live_dashboard(home_team: str, away_team: str, score: str, match_stat
     sim_table.add_row("Over 1.5 Prob", f"{sim_res.over_15_prob}%")
     sim_table.add_row("Over 2.5 Prob", f"{sim_res.over_25_prob}%")
     sim_table.add_row("BTTS Prob", f"{sim_res.btts_prob}%")
-    sim_table.add_row("Expected Final xG", f"{sim_res.expected_goals_home} - {sim_res.expected_goals_away}")
+    sim_table.add_row(
+        "Expected Final xG",
+        f"{pipeline_sim['expected_home_goals']} - {pipeline_sim['expected_away_goals']}"
+    )
+
+    sim_table.add_row(
+        "Pipeline Over 1.5",
+        f"{pipeline_sim['over_15']}%"
+    )
+
+    sim_table.add_row(
+        "Pipeline Over 2.5",
+        f"{pipeline_sim['over_25']}%"
+    )
+
+    sim_table.add_row(
+        "Pipeline BTTS",
+        f"{pipeline_sim['btts']}%"
+    )
 
     # Tabela Decisão
     dec_table = Table(box=box.SIMPLE, show_header=False, expand=True)

@@ -2,9 +2,8 @@ name: Automatic Live Goal Logger & Engine
 
 on:
   schedule:
-    # Corre a cada 5 minutos de forma 100% automática na nuvem
     - cron: '*/5 * * * *'
-  workflow_dispatch: # Permite também disparar manualmente se quiseres testar
+  workflow_dispatch:
 
 jobs:
   run-logger:
@@ -22,7 +21,16 @@ jobs:
       - name: 3. Instalar Dependências
         run: |
           python -m pip install --upgrade pip
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements.txt
+
+          echo "===== REQUIREMENTS ====="
+          cat requirements.txt
+
+          echo "===== INSTALLED PACKAGES ====="
+          pip list
+
+          echo "===== TEST RICH ====="
+          python -c "import rich; print('Rich OK')"
 
       - name: 4. Executar Monitorização e Logger
         env:
@@ -32,7 +40,7 @@ jobs:
         run: |
           python main.py --mode monitor
 
-      - name: 5. Guardar Alterações na Base de Dados (Auto-Commit)
+      - name: 5. Guardar Alterações na Base de Dados
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"

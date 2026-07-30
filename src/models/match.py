@@ -16,6 +16,7 @@ class Match:
         self.home = home
         self.away = away
         self.odds = odds
+        self.odd = odds
         self.probability = probability
         self.league = league
         self.xg_home = xg_home
