@@ -2,8 +2,9 @@ name: Automatic Live Goal Logger & Engine
 
 on:
   schedule:
+    # Corre a cada 5 minutos de forma 100% automática na nuvem
     - cron: '*/5 * * * *'
-  workflow_dispatch:
+  workflow_dispatch: # Permite também disparar manualmente se quiseres testar
 
 jobs:
   run-logger:
@@ -21,23 +22,7 @@ jobs:
       - name: 3. Instalar Dependências
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-          echo "===== REQUIREMENTS ====="
-          cat requirements.txt
-
-          echo "===== INSTALLED PACKAGES ====="
-          pip list
-
-          echo "===== TEST RICH ====="
-          python -c "import rich; print('Rich OK')"
-
-      - name: 3.5 Test Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          python -c "from src.telegram.notifier import send_message; send_message('GitHub Actions Telegram OK')"
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: 4. Executar Monitorização e Logger
         env:
@@ -45,13 +30,11 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          PYTHONPATH=. python src/engine/live_monitor.py
+          python main.py --mode monitor
 
-      - name: 5. Guardar Alterações na Base de Dados
+      - name: 5. Guardar Alterações na Base de Dados (Auto-Commit)
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -f data/live_history.db ]; then
-            git add data/live_history.db
-          fi
+          git add data/live_history.db
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore(logger): auto-update live history db [skip ci]" && git push)

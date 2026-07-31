@@ -1,8 +1,8 @@
 from src.live.engine import LiveGoalEngine
 from src.engine.simulation import MonteCarloSimulator
 
-from src.live.providers.mock_match_provider import MockMatchProvider
-from src.live.providers.mock_odds_provider import MockOddsProvider
+from src.live.providers.api_match_provider import APIMatchProvider
+from src.live.providers.api_odds_provider import APIOddsProvider
 
 
 class LivePipeline:
@@ -19,13 +19,13 @@ class LivePipeline:
         self.match_provider = (
             match_provider
             if match_provider
-            else MockMatchProvider()
+            else APIMatchProvider()
         )
 
         self.odds_provider = (
             odds_provider
             if odds_provider
-            else MockOddsProvider()
+            else APIOddsProvider()
         )
 
     def calculate_dynamic_lambda(self, live_result):
