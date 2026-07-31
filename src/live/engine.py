@@ -43,24 +43,38 @@ class LiveGoalEngine:
         dominance = self.calculate_dominance_index(match)
         live_xg_10m = self.estimate_live_xg(match)
         
-        # Base de xG histórico vs ao vivo
+        # Base de xG histórico
         base_xg = (match.home_xg_last5 + match.away_conceded_xg_last5) / 2.0
-        
-        # Fator tempo/minuto do jogo (jogo ganha urgência após os 60')
-        time_factor = 1.0 + (match.minute / 90.0) * 0.25
-        
-        # Fórmula de Probabilidade Combinada
-        prob = ((pressure / 100.0) * 0.35) + \
-               ((dominance / 100.0) * 0.25) + \
-               (min(live_xg_10m / 1.5, 1.0) * 0.40)
-               
-        prob = min(prob * time_factor, 0.95)
-        prob_pct = round(prob * 100, 1)
+
+        score_diff = abs(match.home_score - match.away_score)
+        draw_bonus = 15 if score_diff == 0 else (8 if score_diff == 1 else 0)
+
+        last_goal_bonus = 0
+        if match.last_goal_minute is not None:
+            last_goal_bonus = max(0,15-(match.minute-match.last_goal_minute))
+
+        time_factor = min(match.minute/90.0,1.0)
+
+        pressure_score = pressure
+        pressure_score += draw_bonus
+        pressure_score += last_goal_bonus
+        pressure_score += min(base_xg*10,20)
+        pressure_score += match.red_cards*5
+
+        pressure_score = max(0,min(100,pressure_score))
+
+        prob_pct = round(
+            pressure_score*0.60 +
+            dominance*0.15 +
+            min(live_xg_10m*25,15) +
+            time_factor*10,
+            1
+        )
 
         # Recomendação inteligente
-        if prob_pct >= 70.0:
+        if prob_pct >= 55:
             rec = "🔥 BET (HIGH PROB)"
-        elif prob_pct >= 50.0:
+        elif prob_pct >= 35:
             rec = "⚠️ WAIT (PRESSURE BUILDING)"
         else:
             rec = "❄️ PASS (LOW ACTIVITY)"
