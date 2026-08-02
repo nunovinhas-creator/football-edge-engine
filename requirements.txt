@@ -3,6 +3,8 @@ python-dotenv
 pandas
 numpy
 scikit-learn
+lightgbm
+imbalanced-learn
 matplotlib
 streamlit
 streamlit
