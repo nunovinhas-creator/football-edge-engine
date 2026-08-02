@@ -50,6 +50,10 @@ jobs:
         run: |
           PYTHONPATH=. python src/engine/live_monitor.py
 
+      - name: 4.5 Recalcular Labels (goal_in_next_15m)
+        run: |
+          PYTHONPATH=. python src/training/create_labels.py
+
       - name: 5. Guardar Alterações na Base de Dados
         run: |
           git config --global user.name "github-actions[bot]"
