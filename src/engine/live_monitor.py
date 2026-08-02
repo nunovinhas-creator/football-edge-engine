@@ -38,7 +38,14 @@ def run_live_pipeline():
 
     for event in events:
         match_data = fetcher.parse_live_metrics_for_engine(event)
-        
+
+        if match_data.get("home_score") is None or match_data.get("away_score") is None:
+            print(
+                f"⚠️ Jogo ignorado (match_id={match_data.get('match_id')}): "
+                "home_score/away_score ausente (None)."
+            )
+            continue
+
         # 1. Atualizar se existiu golo nas entradas registadas há ~15 minutos
         # (Consideramos se o placard mudou em relação ao snapshot anterior)
         goal_just_happened = match_data.get('goal_occurred_recently', False)
