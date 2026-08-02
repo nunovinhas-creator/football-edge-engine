@@ -52,6 +52,6 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f data/live_history.db ]; then
-            git add data/live_history.db
+            git add -f data/live_history.db
           fi
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore(logger): auto-update live history db [skip ci]" && git push)
