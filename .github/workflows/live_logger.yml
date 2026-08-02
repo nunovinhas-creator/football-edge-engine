@@ -41,7 +41,7 @@ jobs:
 
       - name: 4. Executar Monitorização e Logger
         env:
-          BSD_API_KEY: ${{ secrets.BSD_API_KEY }}
+          BSD_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
