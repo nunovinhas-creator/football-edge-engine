@@ -13,12 +13,15 @@ from sklearn.ensemble import (
     HistGradientBoostingClassifier,
     RandomForestClassifier,
 )
+from sklearn.calibration import CalibratedClassifierCV
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    brier_score_loss,
     confusion_matrix,
     f1_score,
+    log_loss,
     precision_score,
     recall_score,
     roc_auc_score,
@@ -39,6 +42,8 @@ FEATURE_IMPORTANCE_PATH = "models/live_goal_model_feature_importance.json"
 REPORT_PATH = "models/train_validation_report.md"
 THRESHOLD_CONFIG_PATH = "models/live_goal_model_threshold.json"
 THRESHOLD_REPORT_PATH = "models/threshold_optimization_report.md"
+CALIBRATION_METRICS_PATH = "models/calibration_metrics.json"
+CALIBRATION_REPORT_PATH = "models/calibration_report.md"
 
 TARGET_COLUMN = "goal_in_next_15m"
 GROUP_COLUMN = "match_id"
@@ -59,6 +64,12 @@ FEATURES = [
 
 RANDOM_STATE = 42
 N_SPLITS = 5
+
+# --- Calibracao de probabilidades ---
+# Metodo usado por CalibratedClassifierCV. Unico local de configuracao:
+# "sigmoid" (Platt Scaling) ou "isotonic".
+CALIBRATION_METHOD = "sigmoid"
+CALIBRATION_VERDICT_TOLERANCE = 0.01
 
 # --- Otimizacao do threshold de decisao ---
 # Metrica usada para escolher o threshold otimo. Alterar aqui para mudar a
@@ -498,6 +509,207 @@ def compute_oof_probabilities(model_name, X, y, groups):
     return np.array(y_true_all), np.array(y_proba_all)
 
 
+def calibrate_best_model(model_name, X, y, groups):
+    """
+    Calibra as probabilidades do modelo vencedor com CalibratedClassifierCV
+    em modo "cv" (ensemble=True), usando exatamente os mesmos folds da
+    validacao cruzada (build_cv_splitter(), inalterada, chamada aqui uma vez
+    e reutilizada tanto para o fit como para extrair as previsoes
+    out-of-fold a seguir). Neste modo, cada um dos N_SPLITS membros do
+    ensemble e treinado APENAS na porcao de treino do seu fold e calibrado
+    APENAS na porcao de teste desse mesmo fold - nunca no conjunto usado
+    para o treinar. Nao usa nem altera cross_validate(), aggregate_metrics()
+    ou select_best_model(); e uma camada adicional.
+
+    Devolve (calibrated_model, fold_splits) se a calibracao for bem
+    sucedida, ou (None, fold_splits) se falhar por qualquer motivo - nesse
+    caso o chamador deve usar o modelo original sem calibrar (regra 7).
+    """
+    splitter, _ = build_cv_splitter()
+    fold_splits = list(splitter.split(X, y, groups=groups))
+
+    raw_model = build_models()[model_name]
+    try:
+        calibrated_model = CalibratedClassifierCV(
+            estimator=raw_model,
+            method=CALIBRATION_METHOD,
+            cv=fold_splits,
+            ensemble=True,
+        )
+        calibrated_model.fit(X, y)
+    except Exception as exc:
+        print(
+            f"WARNING: model={model_name} operation=calibration failed: "
+            f"{_short_error(exc)} - a usar o modelo original sem calibrar."
+        )
+        return None, fold_splits
+
+    return calibrated_model, fold_splits
+
+
+def compute_oof_probabilities_calibrated(calibrated_model, fold_splits, X, y):
+    """
+    Previsoes calibradas out-of-fold: cada amostra e avaliada apenas pelo
+    membro do ensemble (de calibrate_best_model) cujo fold de calibracao a
+    incluiu no conjunto de teste - nunca por um membro cuja base foi
+    treinada com essa amostra. Mesma logica de seguranca de
+    compute_oof_probabilities(), aplicada ao modelo ja calibrado.
+    """
+    y_true_all = []
+    y_proba_all = []
+
+    for member, (train_idx, test_idx) in zip(
+        calibrated_model.calibrated_classifiers_, fold_splits
+    ):
+        try:
+            proba = member.predict_proba(X.iloc[test_idx])[:, 1]
+        except Exception as exc:
+            print(
+                f"WARNING: operation=oof_calibrated_predict_proba failed: "
+                f"{_short_error(exc)} (fold ignorado)"
+            )
+            continue
+        y_true_all.extend(y.iloc[test_idx].tolist())
+        y_proba_all.extend(proba.tolist())
+
+    return np.array(y_true_all), np.array(y_proba_all)
+
+
+def _safe_brier_and_log_loss(y_true, y_proba):
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
+        return None, None
+
+    try:
+        brier = float(brier_score_loss(y_true, y_proba))
+    except Exception:
+        brier = None
+
+    try:
+        ll = float(log_loss(y_true, y_proba, labels=[0, 1]))
+    except Exception:
+        ll = None
+
+    return brier, ll
+
+
+def _calibration_verdict(before, after, tol=CALIBRATION_VERDICT_TOLERANCE):
+    if before is None or after is None:
+        return None
+    if before == 0:
+        return "manteve" if after == 0 else "piorou"
+    relative_change = (after - before) / before
+    if relative_change < -tol:
+        return "melhorou"
+    if relative_change > tol:
+        return "piorou"
+    return "manteve"
+
+
+def build_calibration_summary(
+    model_name,
+    calibration_succeeded,
+    before_y_true,
+    before_y_proba,
+    after_y_true,
+    after_y_proba,
+):
+    before_brier, before_log_loss = _safe_brier_and_log_loss(before_y_true, before_y_proba)
+    summary = {
+        "model_name": model_name,
+        "calibration_method": CALIBRATION_METHOD,
+        "calibration_succeeded": calibration_succeeded,
+        "before": {
+            "n_oof_samples": int(len(before_y_true)),
+            "brier_score": before_brier,
+            "log_loss": before_log_loss,
+        },
+        "after": None,
+        "verdict_brier": None,
+        "verdict_log_loss": None,
+    }
+
+    if calibration_succeeded:
+        after_brier, after_log_loss = _safe_brier_and_log_loss(after_y_true, after_y_proba)
+        summary["after"] = {
+            "n_oof_samples": int(len(after_y_true)),
+            "brier_score": after_brier,
+            "log_loss": after_log_loss,
+        }
+        summary["verdict_brier"] = _calibration_verdict(before_brier, after_brier)
+        summary["verdict_log_loss"] = _calibration_verdict(before_log_loss, after_log_loss)
+
+    return summary
+
+
+def write_calibration_metrics(summary):
+    os.makedirs(os.path.dirname(CALIBRATION_METRICS_PATH), exist_ok=True)
+    with open(CALIBRATION_METRICS_PATH, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False)
+    print(f"Metricas de calibracao guardadas em: {CALIBRATION_METRICS_PATH}")
+
+
+def write_calibration_report(summary):
+    os.makedirs(os.path.dirname(CALIBRATION_REPORT_PATH), exist_ok=True)
+
+    def fmt(value):
+        return f"{value:.4f}" if value is not None else "N/A"
+
+    lines = []
+    lines.append("# Relatorio de Calibracao de Probabilidades")
+    lines.append("")
+    lines.append(f"Modelo: `{summary['model_name']}`")
+    lines.append(f"Metodo: `{summary['calibration_method']}`")
+    lines.append(
+        f"Calibracao bem sucedida: {'Sim' if summary['calibration_succeeded'] else 'Nao'}"
+    )
+    lines.append("")
+
+    if not summary["calibration_succeeded"]:
+        lines.append(
+            "A calibracao falhou; o pipeline continuou automaticamente com o "
+            "modelo original (sem calibrar). Ver o WARNING emitido no log de "
+            "treino para o motivo exato da falha."
+        )
+        lines.append("")
+        lines.append("## Brier Score / Log Loss (modelo original, out-of-fold)")
+        lines.append("")
+        lines.append(f"- Brier Score: {fmt(summary['before']['brier_score'])}")
+        lines.append(f"- Log Loss: {fmt(summary['before']['log_loss'])}")
+        lines.append(f"- Amostras out-of-fold: {summary['before']['n_oof_samples']}")
+        lines.append("")
+        with open(CALIBRATION_REPORT_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"Relatorio de calibracao guardado em: {CALIBRATION_REPORT_PATH}")
+        return
+
+    before = summary["before"]
+    after = summary["after"]
+
+    lines.append("## Brier Score (menor e melhor)")
+    lines.append("")
+    lines.append(f"- Antes (modelo original): {fmt(before['brier_score'])}")
+    lines.append(f"- Depois (modelo calibrado): {fmt(after['brier_score'])}")
+    lines.append(f"- Comentario: {summary['verdict_brier'] or 'N/A'}")
+    lines.append("")
+
+    lines.append("## Log Loss (menor e melhor)")
+    lines.append("")
+    lines.append(f"- Antes (modelo original): {fmt(before['log_loss'])}")
+    lines.append(f"- Depois (modelo calibrado): {fmt(after['log_loss'])}")
+    lines.append(f"- Comentario: {summary['verdict_log_loss'] or 'N/A'}")
+    lines.append("")
+
+    lines.append(
+        f"Amostras out-of-fold usadas: {before['n_oof_samples']} (antes), "
+        f"{after['n_oof_samples']} (depois)."
+    )
+    lines.append("")
+
+    with open(CALIBRATION_REPORT_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"Relatorio de calibracao guardado em: {CALIBRATION_REPORT_PATH}")
+
+
 def evaluate_at_threshold(y_true, y_proba, threshold):
     y_pred = (y_proba >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
@@ -926,14 +1138,96 @@ def main():
     print(f"Melhor modelo: {best_model_name} (criterio={criterio}, score={best_score:.4f})")
     print()
 
-    # Otimizacao do threshold de decisao, usando APENAS previsoes
-    # out-of-fold do modelo vencedor (nunca o modelo final treinado com
-    # 100% dos dados, para evitar leakage). Ver compute_oof_probabilities().
+    # Calibracao das probabilidades do modelo vencedor - camada adicional,
+    # nao interfere na validacao cruzada nem na selecao do melhor modelo
+    # (ja concluidas acima). Ver calibrate_best_model().
+    print("=" * 60)
+    print(f"CALIBRACAO DE PROBABILIDADES (metodo={CALIBRATION_METHOD})")
+    print("=" * 60)
+
+    raw_oof_y_true, raw_oof_y_proba = compute_oof_probabilities(best_model_name, X, y, groups)
+    calibrated_model, fold_splits = calibrate_best_model(best_model_name, X, y, groups)
+
+    if calibrated_model is not None:
+        calibrated_oof_y_true, calibrated_oof_y_proba = compute_oof_probabilities_calibrated(
+            calibrated_model, fold_splits, X, y
+        )
+        calibration_succeeded = True
+        final_model = calibrated_model
+        threshold_y_true, threshold_y_proba = calibrated_oof_y_true, calibrated_oof_y_proba
+        print(f"Calibracao concluida com sucesso ({CALIBRATION_METHOD}).")
+    else:
+        calibration_succeeded = False
+        calibrated_oof_y_true, calibrated_oof_y_proba = None, None
+        threshold_y_true, threshold_y_proba = raw_oof_y_true, raw_oof_y_proba
+        print("A calibracao falhou - a usar o modelo original (nao calibrado).")
+
+        # Fallback (regra 7): modelo original, re-treinado com 100% dos
+        # dados disponiveis - exatamente o que o pipeline ja fazia antes
+        # desta funcionalidade. Continua protegido: se ate isto falhar, nao
+        # gravamos um .pkl parcial e terminamos com erro claro.
+        final_model = build_models()[best_model_name]
+        try:
+            final_model.fit(X, y)
+        except Exception as exc:
+            print("=" * 60)
+            print(
+                f"ERRO: retreino do modelo original ({best_model_name}) com "
+                f"100% dos dados falhou: {_short_error(exc)}"
+            )
+            print("Nenhum modelo foi guardado.")
+            print("=" * 60)
+
+            write_metrics(
+                splitter_name,
+                n_splits,
+                n_matches_total,
+                n_snapshots_total,
+                fold_reports,
+                per_model_fold_metrics,
+                metrics_summary,
+                excluded_models,
+                best_model_name,
+                selection_metric,
+                best_score,
+            )
+            write_feature_importance(importance_summary)
+            write_validation_report(
+                splitter_name,
+                n_splits,
+                n_matches_total,
+                n_snapshots_total,
+                fold_reports,
+                per_model_fold_metrics,
+                metrics_summary,
+                excluded_models,
+                best_model_name,
+                selection_metric,
+                best_score,
+            )
+            sys.exit(1)
+    print()
+
+    calibration_summary = build_calibration_summary(
+        best_model_name,
+        calibration_succeeded,
+        raw_oof_y_true,
+        raw_oof_y_proba,
+        calibrated_oof_y_true,
+        calibrated_oof_y_proba,
+    )
+    write_calibration_metrics(calibration_summary)
+    write_calibration_report(calibration_summary)
+
+    # Otimizacao do threshold de decisao (inalterada), agora alimentada
+    # pelas previsoes out-of-fold do modelo CALIBRADO quando a calibracao
+    # foi bem sucedida (ou do modelo original, se tiver falhado) - nunca o
+    # modelo final gravado em .pkl aplicado aos dados que o treinaram, para
+    # evitar leakage.
     print("=" * 60)
     print(f"OTIMIZACAO DO THRESHOLD (metrica={THRESHOLD_OPTIMIZATION_METRIC})")
     print("=" * 60)
-    oof_y_true, oof_y_proba = compute_oof_probabilities(best_model_name, X, y, groups)
-    threshold_result = find_optimal_threshold(oof_y_true, oof_y_proba)
+    threshold_result = find_optimal_threshold(threshold_y_true, threshold_y_proba)
     if threshold_result is None:
         print(
             f"Nao foi possivel otimizar o threshold (amostras out-of-fold "
@@ -948,58 +1242,17 @@ def main():
         )
     print()
     write_threshold_config(threshold_result, best_model_name)
-    write_threshold_report(threshold_result, best_model_name, oof_y_true, oof_y_proba)
-
-    # Retreino final do modelo vencedor com 100% dos dados disponiveis
-    # (mesma classe e mesmos hiperparametros de build_models()). So chega
-    # aqui um modelo com pelo menos um fold valido na validacao cruzada.
-    # Protegido tambem por try/except: se mesmo assim falhar, nao gravamos
-    # um .pkl parcial e terminamos com erro claro (regra 6/7 do pedido).
-    final_models = build_models()
-    final_model = final_models[best_model_name]
-    try:
-        final_model.fit(X, y)
-    except Exception as exc:
-        print("=" * 60)
-        print(
-            f"ERRO: retreino final de {best_model_name} com 100% dos dados falhou: "
-            f"{_short_error(exc)}"
-        )
-        print("Nenhum modelo foi guardado.")
-        print("=" * 60)
-
-        write_metrics(
-            splitter_name,
-            n_splits,
-            n_matches_total,
-            n_snapshots_total,
-            fold_reports,
-            per_model_fold_metrics,
-            metrics_summary,
-            excluded_models,
-            best_model_name,
-            selection_metric,
-            best_score,
-        )
-        write_feature_importance(importance_summary)
-        write_validation_report(
-            splitter_name,
-            n_splits,
-            n_matches_total,
-            n_snapshots_total,
-            fold_reports,
-            per_model_fold_metrics,
-            metrics_summary,
-            excluded_models,
-            best_model_name,
-            selection_metric,
-            best_score,
-        )
-        sys.exit(1)
+    write_threshold_report(threshold_result, best_model_name, threshold_y_true, threshold_y_proba)
 
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     joblib.dump(final_model, MODEL_PATH)
-    print(f"Modelo vencedor re-treinado com 100% dos dados e guardado em: {MODEL_PATH}")
+    if calibration_succeeded:
+        print(f"Modelo vencedor calibrado guardado em: {MODEL_PATH}")
+    else:
+        print(
+            f"Modelo vencedor (nao calibrado) re-treinado com 100% dos dados "
+            f"e guardado em: {MODEL_PATH}"
+        )
 
     write_metrics(
         splitter_name,
