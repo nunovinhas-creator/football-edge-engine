@@ -16,6 +16,8 @@ from sklearn.ensemble import (
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import (
     accuracy_score,
+    balanced_accuracy_score,
+    confusion_matrix,
     f1_score,
     precision_score,
     recall_score,
@@ -35,6 +37,8 @@ MODEL_PATH = "models/live_goal_model.pkl"
 METRICS_PATH = "models/live_goal_model_metrics.json"
 FEATURE_IMPORTANCE_PATH = "models/live_goal_model_feature_importance.json"
 REPORT_PATH = "models/train_validation_report.md"
+THRESHOLD_CONFIG_PATH = "models/live_goal_model_threshold.json"
+THRESHOLD_REPORT_PATH = "models/threshold_optimization_report.md"
 
 TARGET_COLUMN = "goal_in_next_15m"
 GROUP_COLUMN = "match_id"
@@ -55,6 +59,30 @@ FEATURES = [
 
 RANDOM_STATE = 42
 N_SPLITS = 5
+
+# --- Otimizacao do threshold de decisao ---
+# Metrica usada para escolher o threshold otimo. Alterar aqui para mudar a
+# metrica sem tocar no resto do pipeline. Metricas disponiveis: "f1",
+# "precision", "recall", "balanced_accuracy", "youden_j" (definidas em
+# THRESHOLD_METRICS, que pode ser estendido com qualquer outra metrica do
+# scikit-learn que aceite (y_true, y_pred)).
+THRESHOLD_OPTIMIZATION_METRIC = "f1"
+DEFAULT_THRESHOLD = 0.5
+THRESHOLD_GRID = np.round(np.arange(0.05, 0.951, 0.01), 4)
+
+
+def _youden_j_score(y_true, y_pred):
+    # Youden's J = sensibilidade + especificidade - 1 = 2*balanced_accuracy - 1
+    return 2.0 * balanced_accuracy_score(y_true, y_pred) - 1.0
+
+
+THRESHOLD_METRICS = {
+    "f1": lambda y_true, y_pred: f1_score(y_true, y_pred, zero_division=0),
+    "precision": lambda y_true, y_pred: precision_score(y_true, y_pred, zero_division=0),
+    "recall": lambda y_true, y_pred: recall_score(y_true, y_pred, zero_division=0),
+    "balanced_accuracy": balanced_accuracy_score,
+    "youden_j": _youden_j_score,
+}
 
 SINGLE_CLASS_TEST_WARNING = (
     "WARNING: Fold {fold} test set contains only one class. "
@@ -426,6 +454,193 @@ def select_best_model(metrics_summary):
     return best_model_name, "f1_mean", scored[best_model_name]
 
 
+def compute_oof_probabilities(model_name, X, y, groups):
+    """
+    Recalcula previsoes out-of-fold para um unico modelo, usando exatamente
+    o mesmo splitter e random_state da validacao cruzada (build_cv_splitter()
+    e build_models(), ambas inalteradas) - reproduz os mesmos folds ja
+    usados em cross_validate(). Cada previsao devolvida vem sempre de uma
+    instancia treinada sem os dados desse fold, pelo que o conjunto agregado
+    e seguro para otimizar o threshold (nunca usa o modelo final treinado
+    com 100% dos dados). Nao interfere em cross_validate(), aggregate_metrics()
+    nem select_best_model() - e um recalculo isolado, so para este fim.
+    """
+    splitter, _ = build_cv_splitter()
+
+    y_true_all = []
+    y_proba_all = []
+
+    for train_idx, test_idx in splitter.split(X, y, groups=groups):
+        X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+        y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+
+        if len(np.unique(y_train)) < 2:
+            # Sem as duas classes no treino deste fold o modelo nao produz
+            # probabilidade de classe positiva valida; fold ignorado so
+            # para este calculo (nao afeta a validacao cruzada, que ja
+            # correu antes e de forma independente).
+            continue
+
+        model = build_models()[model_name]
+        try:
+            model.fit(X_train, y_train)
+            proba = model.predict_proba(X_test)[:, 1]
+        except Exception as exc:
+            print(
+                f"WARNING: model={model_name} operation=oof_predict_proba "
+                f"failed: {_short_error(exc)} (fold ignorado na otimizacao do threshold)"
+            )
+            continue
+
+        y_true_all.extend(y_test.tolist())
+        y_proba_all.extend(proba.tolist())
+
+    return np.array(y_true_all), np.array(y_proba_all)
+
+
+def evaluate_at_threshold(y_true, y_proba, threshold):
+    y_pred = (y_proba >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "threshold": float(threshold),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "confusion_matrix": {
+            "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp),
+        },
+    }
+
+
+def find_optimal_threshold(y_true, y_proba, metric_name=THRESHOLD_OPTIMIZATION_METRIC):
+    """
+    Procura, na grelha THRESHOLD_GRID (0.05 a 0.95, passo 0.01), o threshold
+    que maximiza metric_name. Devolve None se os dados de validacao nao
+    permitirem otimizar (sem amostras ou so uma classe presente) - nesse
+    caso o chamador deve cair para DEFAULT_THRESHOLD.
+    """
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
+        return None
+
+    metric_fn = THRESHOLD_METRICS[metric_name]
+
+    best_threshold = None
+    best_score = -np.inf
+    scores_by_threshold = []
+
+    for t in THRESHOLD_GRID:
+        y_pred = (y_proba >= t).astype(int)
+        score = float(metric_fn(y_true, y_pred))
+        scores_by_threshold.append({"threshold": float(t), "score": score})
+        if score > best_score:
+            best_score = score
+            best_threshold = float(t)
+
+    return {
+        "threshold": best_threshold,
+        "metric": metric_name,
+        "metric_value": best_score,
+        "n_oof_samples": int(len(y_true)),
+        "scores_by_threshold": scores_by_threshold,
+    }
+
+
+def write_threshold_config(threshold_result, model_name):
+    os.makedirs(os.path.dirname(THRESHOLD_CONFIG_PATH), exist_ok=True)
+
+    if threshold_result is None:
+        config = {
+            "threshold": DEFAULT_THRESHOLD,
+            "optimization_metric": None,
+            "optimization_metric_value": None,
+            "model_name": model_name,
+            "n_oof_samples": 0,
+            "note": (
+                "Otimizacao do threshold nao foi possivel (dados de validacao "
+                "out-of-fold insuficientes ou com uma so classe). A usar o "
+                f"threshold por omissao ({DEFAULT_THRESHOLD})."
+            ),
+        }
+    else:
+        config = {
+            "threshold": threshold_result["threshold"],
+            "optimization_metric": threshold_result["metric"],
+            "optimization_metric_value": threshold_result["metric_value"],
+            "model_name": model_name,
+            "n_oof_samples": threshold_result["n_oof_samples"],
+            "note": None,
+        }
+
+    with open(THRESHOLD_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    print(f"Configuracao de threshold guardada em: {THRESHOLD_CONFIG_PATH}")
+
+
+def write_threshold_report(threshold_result, model_name, y_true, y_proba):
+    os.makedirs(os.path.dirname(THRESHOLD_REPORT_PATH), exist_ok=True)
+
+    lines = []
+    lines.append("# Relatorio de Otimizacao do Threshold de Decisao")
+    lines.append("")
+    lines.append(f"Modelo vencedor: `{model_name}`")
+    lines.append("")
+
+    if threshold_result is None:
+        lines.append(
+            "Nao foi possivel otimizar o threshold: os dados de validacao "
+            "out-of-fold nao tinham amostras suficientes ou continham so "
+            f"uma classe. A usar o threshold por omissao ({DEFAULT_THRESHOLD})."
+        )
+        lines.append("")
+        with open(THRESHOLD_REPORT_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"Relatorio de threshold guardado em: {THRESHOLD_REPORT_PATH}")
+        return
+
+    optimal_threshold = threshold_result["threshold"]
+    lines.append(f"Metrica de otimizacao: `{threshold_result['metric']}`")
+    lines.append(f"Threshold otimo: {optimal_threshold:.4f}")
+    lines.append(f"Valor da metrica no threshold otimo: {threshold_result['metric_value']:.4f}")
+    lines.append(f"Amostras de validacao (out-of-fold) usadas: {threshold_result['n_oof_samples']}")
+    lines.append("")
+
+    default_eval = evaluate_at_threshold(y_true, y_proba, DEFAULT_THRESHOLD)
+    optimal_eval = evaluate_at_threshold(y_true, y_proba, optimal_threshold)
+
+    lines.append("## Comparacao: threshold 0.5 (default) vs threshold otimo")
+    lines.append("")
+    lines.append("| Threshold | Precision | Recall | F1 |")
+    lines.append("|---|---|---|---|")
+    lines.append(
+        f"| 0.5 (default) | {default_eval['precision']:.4f} | "
+        f"{default_eval['recall']:.4f} | {default_eval['f1']:.4f} |"
+    )
+    lines.append(
+        f"| {optimal_threshold:.4f} (otimo) | {optimal_eval['precision']:.4f} | "
+        f"{optimal_eval['recall']:.4f} | {optimal_eval['f1']:.4f} |"
+    )
+    lines.append("")
+
+    def cm_table(title, cm):
+        rows = [
+            f"## Matriz de confusao — {title}",
+            "",
+            "| | Previsto: sem golo | Previsto: golo |",
+            "|---|---|---|",
+            f"| Real: sem golo | TN={cm['tn']} | FP={cm['fp']} |",
+            f"| Real: golo | FN={cm['fn']} | TP={cm['tp']} |",
+            "",
+        ]
+        return rows
+
+    lines.extend(cm_table("threshold 0.5 (default)", default_eval["confusion_matrix"]))
+    lines.extend(cm_table(f"threshold {optimal_threshold:.4f} (otimo)", optimal_eval["confusion_matrix"]))
+
+    with open(THRESHOLD_REPORT_PATH, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print(f"Relatorio de threshold guardado em: {THRESHOLD_REPORT_PATH}")
+
+
 def write_metrics(
     splitter_name,
     n_splits,
@@ -710,6 +925,30 @@ def main():
     criterio = "ROC-AUC media" if selection_metric == "auc_mean" else "F1 media"
     print(f"Melhor modelo: {best_model_name} (criterio={criterio}, score={best_score:.4f})")
     print()
+
+    # Otimizacao do threshold de decisao, usando APENAS previsoes
+    # out-of-fold do modelo vencedor (nunca o modelo final treinado com
+    # 100% dos dados, para evitar leakage). Ver compute_oof_probabilities().
+    print("=" * 60)
+    print(f"OTIMIZACAO DO THRESHOLD (metrica={THRESHOLD_OPTIMIZATION_METRIC})")
+    print("=" * 60)
+    oof_y_true, oof_y_proba = compute_oof_probabilities(best_model_name, X, y, groups)
+    threshold_result = find_optimal_threshold(oof_y_true, oof_y_proba)
+    if threshold_result is None:
+        print(
+            f"Nao foi possivel otimizar o threshold (amostras out-of-fold "
+            f"insuficientes ou com uma so classe); a usar threshold por "
+            f"omissao = {DEFAULT_THRESHOLD}"
+        )
+    else:
+        print(
+            f"Threshold otimo: {threshold_result['threshold']:.4f} "
+            f"({THRESHOLD_OPTIMIZATION_METRIC}={threshold_result['metric_value']:.4f}, "
+            f"n_oof_samples={threshold_result['n_oof_samples']})"
+        )
+    print()
+    write_threshold_config(threshold_result, best_model_name)
+    write_threshold_report(threshold_result, best_model_name, oof_y_true, oof_y_proba)
 
     # Retreino final do modelo vencedor com 100% dos dados disponiveis
     # (mesma classe e mesmos hiperparametros de build_models()). So chega
