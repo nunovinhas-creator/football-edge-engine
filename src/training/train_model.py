@@ -465,6 +465,48 @@ def select_best_model(metrics_summary):
     return best_model_name, "f1_mean", scored[best_model_name]
 
 
+def _select_valid_folds(model_name, X, y, groups):
+    """
+    Calcula os folds de build_cv_splitter() (inalterada) e filtra os que
+    tem y_train com uma so classe - condicao que impede qualquer modelo de
+    produzir uma probabilidade de classe positiva valida nesse fold (mesma
+    condicao que ja existia, em linha, dentro de compute_oof_probabilities).
+
+    Usada tanto por compute_oof_probabilities() como por
+    calibrate_best_model(), para que as previsoes out-of-fold brutas e
+    calibradas sejam sempre calculadas sobre exatamente o mesmo conjunto de
+    folds - por construcao (mesma funcao, mesmos argumentos), nao por
+    coincidencia entre duas implementacoes separadas. Isto e o que garante,
+    a montante, que a comparacao "antes vs depois" no relatorio de
+    calibracao seja valida (ver tambem _oof_populations_comparable(), que
+    verifica isto explicitamente a jusante).
+
+    Devolve (valid_fold_splits, n_total_folds, n_skipped_folds). Quando
+    todos os folds sao validos (caso normal), valid_fold_splits tem o mesmo
+    conteudo que build_cv_splitter().split(...) devolveria diretamente -
+    nenhum comportamento muda face ao anterior.
+    """
+    splitter, _ = build_cv_splitter()
+    all_fold_splits = list(splitter.split(X, y, groups=groups))
+
+    valid_fold_splits = [
+        (train_idx, test_idx)
+        for train_idx, test_idx in all_fold_splits
+        if len(np.unique(y.iloc[train_idx])) >= 2
+    ]
+
+    n_total = len(all_fold_splits)
+    n_skipped = n_total - len(valid_fold_splits)
+    if n_skipped > 0:
+        print(
+            f"WARNING: model={model_name} operation=fold_selection "
+            f"{n_skipped}/{n_total} fold(s) ignorado(s) (treino com uma so "
+            "classe nesse fold) - usados apenas os restantes."
+        )
+
+    return valid_fold_splits, n_total, n_skipped
+
+
 def compute_oof_probabilities(model_name, X, y, groups):
     """
     Recalcula previsoes out-of-fold para um unico modelo, usando exatamente
@@ -476,21 +518,14 @@ def compute_oof_probabilities(model_name, X, y, groups):
     com 100% dos dados). Nao interfere em cross_validate(), aggregate_metrics()
     nem select_best_model() - e um recalculo isolado, so para este fim.
     """
-    splitter, _ = build_cv_splitter()
+    valid_fold_splits, _, _ = _select_valid_folds(model_name, X, y, groups)
 
     y_true_all = []
     y_proba_all = []
 
-    for train_idx, test_idx in splitter.split(X, y, groups=groups):
+    for train_idx, test_idx in valid_fold_splits:
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
-
-        if len(np.unique(y_train)) < 2:
-            # Sem as duas classes no treino deste fold o modelo nao produz
-            # probabilidade de classe positiva valida; fold ignorado so
-            # para este calculo (nao afeta a validacao cruzada, que ja
-            # correu antes e de forma independente).
-            continue
 
         model = build_models()[model_name]
         try:
@@ -513,27 +548,41 @@ def calibrate_best_model(model_name, X, y, groups):
     """
     Calibra as probabilidades do modelo vencedor com CalibratedClassifierCV
     em modo "cv" (ensemble=True), usando exatamente os mesmos folds da
-    validacao cruzada (build_cv_splitter(), inalterada, chamada aqui uma vez
-    e reutilizada tanto para o fit como para extrair as previsoes
-    out-of-fold a seguir). Neste modo, cada um dos N_SPLITS membros do
-    ensemble e treinado APENAS na porcao de treino do seu fold e calibrado
-    APENAS na porcao de teste desse mesmo fold - nunca no conjunto usado
-    para o treinar. Nao usa nem altera cross_validate(), aggregate_metrics()
-    ou select_best_model(); e uma camada adicional.
+    validacao cruzada (build_cv_splitter(), inalterada). Neste modo, cada
+    membro do ensemble e treinado APENAS na porcao de treino do seu fold e
+    calibrado APENAS na porcao de teste desse mesmo fold - nunca no
+    conjunto usado para o treinar. Nao usa nem altera cross_validate(),
+    aggregate_metrics() ou select_best_model(); e uma camada adicional.
 
-    Devolve (calibrated_model, fold_splits) se a calibracao for bem
-    sucedida, ou (None, fold_splits) se falhar por qualquer motivo - nesse
-    caso o chamador deve usar o modelo original sem calibrar (regra 7).
+    Antes de calibrar, filtra (via _select_valid_folds(), a mesma funcao
+    usada por compute_oof_probabilities()) qualquer fold cujo treino tenha
+    uma so classe. Esses folds nunca chegam a CalibratedClassifierCV, para
+    que nenhum membro do ensemble seja treinado/calibrado com dados
+    degenerados - nunca havera um membro que devolva probabilidades
+    constantes por falta de classes.
+
+    Devolve (calibrated_model, valid_fold_splits) se a calibracao for bem
+    sucedida, ou (None, valid_fold_splits) se falhar (incluindo o caso de
+    nao existir nenhum fold valido) - nesse caso o chamador deve usar o
+    modelo original sem calibrar (regra 7).
     """
-    splitter, _ = build_cv_splitter()
-    fold_splits = list(splitter.split(X, y, groups=groups))
+    valid_fold_splits, n_total, n_skipped = _select_valid_folds(model_name, X, y, groups)
+
+    if not valid_fold_splits:
+        print(
+            f"WARNING: model={model_name} operation=calibration failed: "
+            f"nenhum fold valido para calibrar (todos os {n_total} folds "
+            "tem treino com uma so classe) - a usar o modelo original sem "
+            "calibrar."
+        )
+        return None, valid_fold_splits
 
     raw_model = build_models()[model_name]
     try:
         calibrated_model = CalibratedClassifierCV(
             estimator=raw_model,
             method=CALIBRATION_METHOD,
-            cv=fold_splits,
+            cv=valid_fold_splits,
             ensemble=True,
         )
         calibrated_model.fit(X, y)
@@ -542,9 +591,9 @@ def calibrate_best_model(model_name, X, y, groups):
             f"WARNING: model={model_name} operation=calibration failed: "
             f"{_short_error(exc)} - a usar o modelo original sem calibrar."
         )
-        return None, fold_splits
+        return None, valid_fold_splits
 
-    return calibrated_model, fold_splits
+    return calibrated_model, valid_fold_splits
 
 
 def compute_oof_probabilities_calibrated(calibrated_model, fold_splits, X, y):
@@ -605,6 +654,40 @@ def _calibration_verdict(before, after, tol=CALIBRATION_VERDICT_TOLERANCE):
     return "manteve"
 
 
+def _oof_populations_comparable(raw_y_true, calibrated_y_true):
+    """
+    Verifica explicitamente se as previsoes OOF brutas ("antes") e
+    calibradas ("depois") correspondem exatamente a mesma populacao de
+    amostras, na mesma ordem - condicao necessaria para a comparacao
+    Brier/Log Loss "antes vs depois" ser valida.
+
+    Ambas sao construidas iterando os folds validos (_select_valid_folds)
+    pela mesma ordem deterministica e extraindo y_test.tolist() por fold;
+    por isso, sequencias de rotulos identicas em numero e valores implicam
+    a mesma sequencia de amostras nas mesmas posicoes. Isto e verificado
+    aqui em vez de apenas assumido, mesmo sabendo que ambos os lados usam
+    _select_valid_folds() com os mesmos argumentos - protege contra
+    qualquer divergencia residual (por exemplo, uma falha pontual de
+    model.fit()/predict_proba() num fold que so afete um dos dois lados).
+
+    Devolve (True, None) se comparavel, ou (False, motivo) caso contrario.
+    """
+    if len(raw_y_true) != len(calibrated_y_true):
+        return False, (
+            "numero de amostras out-of-fold diferente "
+            f"(antes={len(raw_y_true)}, depois={len(calibrated_y_true)})"
+        )
+    if len(raw_y_true) == 0:
+        return False, "nenhuma amostra out-of-fold disponivel em nenhum dos dois lados"
+    if not np.array_equal(raw_y_true, calibrated_y_true):
+        return False, (
+            "sequencia de rotulos out-of-fold diferente entre o modelo "
+            "original e o modelo calibrado (os folds/amostras usados nao "
+            "coincidem)"
+        )
+    return True, None
+
+
 def build_calibration_summary(
     model_name,
     calibration_succeeded,
@@ -624,19 +707,35 @@ def build_calibration_summary(
             "log_loss": before_log_loss,
         },
         "after": None,
+        "oof_populations_comparable": None,
+        "comparison_warning": None,
         "verdict_brier": None,
         "verdict_log_loss": None,
     }
 
-    if calibration_succeeded:
-        after_brier, after_log_loss = _safe_brier_and_log_loss(after_y_true, after_y_proba)
-        summary["after"] = {
-            "n_oof_samples": int(len(after_y_true)),
-            "brier_score": after_brier,
-            "log_loss": after_log_loss,
-        }
+    if not calibration_succeeded:
+        return summary
+
+    after_brier, after_log_loss = _safe_brier_and_log_loss(after_y_true, after_y_proba)
+    summary["after"] = {
+        "n_oof_samples": int(len(after_y_true)),
+        "brier_score": after_brier,
+        "log_loss": after_log_loss,
+    }
+
+    comparable, reason = _oof_populations_comparable(before_y_true, after_y_true)
+    summary["oof_populations_comparable"] = comparable
+    summary["comparison_warning"] = reason
+
+    if comparable:
         summary["verdict_brier"] = _calibration_verdict(before_brier, after_brier)
         summary["verdict_log_loss"] = _calibration_verdict(before_log_loss, after_log_loss)
+    else:
+        print(
+            f"WARNING: model={model_name} operation=calibration_comparison "
+            f"not directly comparable: {reason}. O relatorio nao vai "
+            "apresentar melhorou/piorou/manteve."
+        )
 
     return summary
 
@@ -684,19 +783,37 @@ def write_calibration_report(summary):
 
     before = summary["before"]
     after = summary["after"]
+    comparable = summary["oof_populations_comparable"]
+
+    if comparable is False:
+        lines.append(
+            f"> AVISO: a comparacao antes/depois NAO e direta - "
+            f"{summary['comparison_warning']}. Os valores abaixo sao "
+            "apenas informativos; NAO representam a mesma populacao de "
+            "amostras, por isso nao e apresentado nenhum veredito de "
+            "melhorou/piorou/manteve."
+        )
+        lines.append("")
+
+    def comentario(verdict):
+        if verdict is not None:
+            return verdict
+        if comparable is False:
+            return "Nao comparavel (ver aviso acima)"
+        return "N/A"
 
     lines.append("## Brier Score (menor e melhor)")
     lines.append("")
     lines.append(f"- Antes (modelo original): {fmt(before['brier_score'])}")
     lines.append(f"- Depois (modelo calibrado): {fmt(after['brier_score'])}")
-    lines.append(f"- Comentario: {summary['verdict_brier'] or 'N/A'}")
+    lines.append(f"- Comentario: {comentario(summary['verdict_brier'])}")
     lines.append("")
 
     lines.append("## Log Loss (menor e melhor)")
     lines.append("")
     lines.append(f"- Antes (modelo original): {fmt(before['log_loss'])}")
     lines.append(f"- Depois (modelo calibrado): {fmt(after['log_loss'])}")
-    lines.append(f"- Comentario: {summary['verdict_log_loss'] or 'N/A'}")
+    lines.append(f"- Comentario: {comentario(summary['verdict_log_loss'])}")
     lines.append("")
 
     lines.append(
