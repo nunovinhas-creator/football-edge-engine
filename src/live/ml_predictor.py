@@ -1,6 +1,11 @@
-import joblib
+import json
 import os
+
+import joblib
 import pandas as pd
+
+DEFAULT_THRESHOLD = 0.5
+THRESHOLD_CONFIG_PATH = "models/live_goal_model_threshold.json"
 
 
 class MLGoalPredictor:
@@ -15,6 +20,19 @@ class MLGoalPredictor:
             )
 
         self.model=joblib.load(path)
+        self.threshold=self._load_threshold()
+
+
+    def _load_threshold(self):
+        if not os.path.exists(THRESHOLD_CONFIG_PATH):
+            return DEFAULT_THRESHOLD
+
+        try:
+            with open(THRESHOLD_CONFIG_PATH, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            return float(config.get("threshold", DEFAULT_THRESHOLD))
+        except (json.JSONDecodeError, TypeError, ValueError, OSError):
+            return DEFAULT_THRESHOLD
 
 
     def predict(self,data):
@@ -29,6 +47,6 @@ class MLGoalPredictor:
 
             "signal":
                 "BET"
-                if prob>0.55
+                if prob>self.threshold
                 else "WAIT"
         }
