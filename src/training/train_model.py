@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 
 import joblib
 import numpy as np
@@ -64,6 +65,10 @@ SINGLE_CLASS_TRAIN_WARNING = (
     "(model cannot produce a positive-class probability). "
     "Skipping ROC-AUC for this fold."
 )
+
+
+class NoValidModelError(RuntimeError):
+    """Nenhum modelo produziu um unico fold valido em toda a validacao cruzada."""
 
 
 def load_dataset():
@@ -162,34 +167,83 @@ def feature_importance_for(model, X_test, y_test, scoring="roc_auc"):
     return {feat: float(val) for feat, val in zip(FEATURES, result.importances_mean)}
 
 
-def evaluate_fold(model, X_train, y_train, X_test, y_test, fold_idx, skip_auc):
-    model.fit(X_train, y_train)
-    pred_label = model.predict(X_test)
+def _short_error(exc):
+    message = str(exc).strip() or repr(exc)
+    return message if len(message) <= 200 else message[:200] + "..."
 
-    metrics = {
+
+def _warn_operation_failure(model_name, fold_idx, operation, exc):
+    reason = f"{operation}: {_short_error(exc)}"
+    print(f"WARNING: model={model_name} fold={fold_idx} operation={operation} failed: {reason}")
+    return reason
+
+
+def evaluate_fold(model, model_name, X_train, y_train, X_test, y_test, fold_idx, skip_auc_reason):
+    """
+    Avalia um modelo num fold isolando cada etapa: uma excecao em qualquer
+    etapa nunca propaga para fora desta funcao. fit()/predict() falharem
+    invalida o fold inteiro para este modelo (sem previsoes nao ha metricas
+    possiveis); predict_proba()/AUC e a importancia de features falharem
+    nao invalidam o fold - ficam apenas marcados como indisponiveis.
+    """
+    result = {
         "fold": fold_idx,
-        "accuracy": float(accuracy_score(y_test, pred_label)),
-        "precision": float(precision_score(y_test, pred_label, zero_division=0)),
-        "recall": float(recall_score(y_test, pred_label, zero_division=0)),
-        "f1": float(f1_score(y_test, pred_label, zero_division=0)),
+        "valid": True,
+        "accuracy": None,
+        "precision": None,
+        "recall": None,
+        "f1": None,
         "auc": None,
+        "failure_reason": None,
+        "auc_skipped_reason": None,
     }
+    importance = None
 
-    # predict_proba so tem coluna para a classe positiva se o modelo viu as
-    # duas classes durante o fit; y_test tambem precisa das duas classes
-    # para o roc_auc_score ser definido. Sem isto, [:, 1] rebenta com
-    # IndexError (treino com 1 classe) ou roc_auc_score rebenta com
-    # ValueError (teste com 1 classe).
-    if not skip_auc:
-        pred_proba = model.predict_proba(X_test)[:, 1]
-        metrics["auc"] = float(roc_auc_score(y_test, pred_proba))
+    try:
+        model.fit(X_train, y_train)
+    except Exception as exc:
+        result["valid"] = False
+        result["failure_reason"] = _warn_operation_failure(model_name, fold_idx, "fit", exc)
+        return result, importance
 
-    importance_scoring = "accuracy" if skip_auc else "roc_auc"
-    importance = feature_importance_for(
-        model, X_test, y_test, scoring=importance_scoring
-    )
+    try:
+        pred_label = model.predict(X_test)
+    except Exception as exc:
+        result["valid"] = False
+        result["failure_reason"] = _warn_operation_failure(model_name, fold_idx, "predict", exc)
+        return result, importance
 
-    return metrics, importance
+    try:
+        result["accuracy"] = float(accuracy_score(y_test, pred_label))
+        result["precision"] = float(precision_score(y_test, pred_label, zero_division=0))
+        result["recall"] = float(recall_score(y_test, pred_label, zero_division=0))
+        result["f1"] = float(f1_score(y_test, pred_label, zero_division=0))
+    except Exception as exc:
+        result["valid"] = False
+        result["failure_reason"] = _warn_operation_failure(
+            model_name, fold_idx, "classification_metrics", exc
+        )
+        return result, importance
+
+    if skip_auc_reason is not None:
+        result["auc_skipped_reason"] = skip_auc_reason
+    else:
+        try:
+            pred_proba = model.predict_proba(X_test)[:, 1]
+            result["auc"] = float(roc_auc_score(y_test, pred_proba))
+        except Exception as exc:
+            result["auc_skipped_reason"] = _warn_operation_failure(
+                model_name, fold_idx, "roc_auc", exc
+            )
+
+    importance_scoring = "accuracy" if result["auc"] is None else "roc_auc"
+    try:
+        importance = feature_importance_for(model, X_test, y_test, scoring=importance_scoring)
+    except Exception as exc:
+        _warn_operation_failure(model_name, fold_idx, "feature_importance", exc)
+        importance = None
+
+    return result, importance
 
 
 def cross_validate(X, y, groups):
@@ -210,6 +264,10 @@ def cross_validate(X, y, groups):
     print("=" * 60)
 
     for fold_idx, (train_idx, test_idx) in enumerate(fold_splits, start=1):
+        # Cada fold e completamente independente: X/y/groups sao fatiados de
+        # novo a partir dos indices deste fold, e build_models() (chamado
+        # abaixo) devolve instancias novas e nao treinadas - nada e
+        # partilhado entre folds nem entre modelos.
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
         groups_train, groups_test = groups.iloc[train_idx], groups.iloc[test_idx]
@@ -220,7 +278,12 @@ def cross_validate(X, y, groups):
 
         single_class_test = len(np.unique(y_test)) < 2
         single_class_train = len(np.unique(y_train)) < 2
-        skip_auc = single_class_test or single_class_train
+
+        skip_auc_reason = None
+        if single_class_test:
+            skip_auc_reason = "single_class_test"
+        elif single_class_train:
+            skip_auc_reason = "single_class_train"
 
         fold_report = {
             "fold": fold_idx,
@@ -242,6 +305,9 @@ def cross_validate(X, y, groups):
             f"overlap match_id={fold_report['match_id_overlap']}"
         )
 
+        # Garantia estrutural de nao-leakage: isto nao e uma falha "por
+        # modelo/fold" recuperavel, e uma violacao do invariante que motivou
+        # todo este pipeline - mantem-se um hard-stop.
         assert fold_report["match_id_overlap"] == 0, (
             f"Group leakage detectado no fold {fold_idx}: existem match_id "
             "presentes simultaneamente no treino e no teste."
@@ -255,7 +321,7 @@ def cross_validate(X, y, groups):
         models = build_models()
         for name, model in models.items():
             metrics, importance = evaluate_fold(
-                model, X_train, y_train, X_test, y_test, fold_idx, skip_auc
+                model, name, X_train, y_train, X_test, y_test, fold_idx, skip_auc_reason
             )
             per_model_fold_metrics[name].append(metrics)
             per_model_fold_importance[name].append(importance)
@@ -272,13 +338,36 @@ def cross_validate(X, y, groups):
 
 def aggregate_metrics(per_model_fold_metrics):
     summary = {}
+    excluded_models = {}
+
     for name, fold_metrics in per_model_fold_metrics.items():
-        agg = {}
+        valid_folds = [fm for fm in fold_metrics if fm["valid"]]
+        invalid_folds = [fm for fm in fold_metrics if not fm["valid"]]
+        invalid_reasons = [
+            {"fold": fm["fold"], "reason": fm["failure_reason"]} for fm in invalid_folds
+        ]
+
+        if not valid_folds:
+            excluded_models[name] = {
+                "n_folds_total": len(fold_metrics),
+                "n_folds_valid": 0,
+                "n_folds_invalid": len(invalid_folds),
+                "invalid_fold_reasons": invalid_reasons,
+            }
+            summary[name] = None
+            continue
+
+        agg = {
+            "n_folds_total": len(fold_metrics),
+            "n_folds_valid": len(valid_folds),
+            "n_folds_invalid": len(invalid_folds),
+            "invalid_fold_reasons": invalid_reasons,
+        }
         for metric in ("accuracy", "precision", "recall", "f1"):
-            values = [fm[metric] for fm in fold_metrics]
+            values = [fm[metric] for fm in valid_folds]
             agg[metric] = {"mean": float(np.mean(values)), "std": float(np.std(values))}
 
-        auc_values = [fm["auc"] for fm in fold_metrics if fm["auc"] is not None]
+        auc_values = [fm["auc"] for fm in valid_folds if fm["auc"] is not None]
         if auc_values:
             agg["auc"] = {
                 "mean": float(np.mean(auc_values)),
@@ -289,14 +378,20 @@ def aggregate_metrics(per_model_fold_metrics):
             agg["auc"] = {"mean": None, "std": None, "n_folds": 0}
 
         summary[name] = agg
-    return summary
+
+    return summary, excluded_models
 
 
 def aggregate_importance(per_model_fold_importance):
     aggregated = {}
     for name, fold_importances in per_model_fold_importance.items():
+        valid_importances = [fi for fi in fold_importances if fi is not None]
+        if not valid_importances:
+            aggregated[name] = None
+            continue
+
         feature_values = {feat: [] for feat in FEATURES}
-        for fold_importance in fold_importances:
+        for fold_importance in valid_importances:
             for feat, val in fold_importance.items():
                 feature_values[feat].append(val)
         aggregated[name] = {
@@ -306,20 +401,27 @@ def aggregate_importance(per_model_fold_importance):
 
 
 def select_best_model(metrics_summary):
+    available = {name: summary for name, summary in metrics_summary.items() if summary is not None}
+
+    if not available:
+        raise NoValidModelError(
+            "Nenhum modelo produziu um unico fold valido em toda a validacao cruzada."
+        )
+
     any_auc_available = any(
-        summary["auc"]["mean"] is not None for summary in metrics_summary.values()
+        summary["auc"]["mean"] is not None for summary in available.values()
     )
 
     if any_auc_available:
         scored = {
             name: summary["auc"]["mean"]
-            for name, summary in metrics_summary.items()
+            for name, summary in available.items()
             if summary["auc"]["mean"] is not None
         }
         best_model_name = max(scored, key=scored.get)
         return best_model_name, "auc_mean", scored[best_model_name]
 
-    scored = {name: summary["f1"]["mean"] for name, summary in metrics_summary.items()}
+    scored = {name: summary["f1"]["mean"] for name, summary in available.items()}
     best_model_name = max(scored, key=scored.get)
     return best_model_name, "f1_mean", scored[best_model_name]
 
@@ -332,6 +434,7 @@ def write_metrics(
     fold_reports,
     per_model_fold_metrics,
     metrics_summary,
+    excluded_models,
     best_model_name,
     selection_metric,
     best_score,
@@ -346,10 +449,11 @@ def write_metrics(
         "models": {
             name: {
                 "per_fold": per_model_fold_metrics[name],
-                "mean": metrics_summary[name],
+                "mean": metrics_summary.get(name),
             }
             for name in per_model_fold_metrics
         },
+        "excluded_models": excluded_models,
         "best_model": best_model_name,
         "best_model_selection_metric": selection_metric,
         "best_model_score": best_score,
@@ -374,6 +478,7 @@ def write_validation_report(
     fold_reports,
     per_model_fold_metrics,
     metrics_summary,
+    excluded_models,
     best_model_name,
     selection_metric,
     best_score,
@@ -415,14 +520,51 @@ def write_validation_report(
         )
     lines.append("")
 
-    lines.append("## Metricas medias por modelo (media +/- desvio-padrao entre folds)")
+    if excluded_models:
+        lines.append("## Modelos excluidos da comparacao")
+        lines.append("")
+        lines.append(
+            "Estes modelos nao produziram um unico fold valido e foram excluidos "
+            "da selecao do melhor modelo."
+        )
+        lines.append("")
+        for name, info in excluded_models.items():
+            lines.append(f"### {name}")
+            lines.append("")
+            lines.append(
+                f"- Folds validos: {info['n_folds_valid']}/{info['n_folds_total']} "
+                f"(ignorados: {info['n_folds_invalid']})"
+            )
+            for reason in info["invalid_fold_reasons"]:
+                lines.append(f"  - Fold {reason['fold']}: {reason['reason']}")
+            lines.append("")
+
+    if not metrics_summary:
+        lines.append("## Resultado")
+        lines.append("")
+        lines.append(
+            "Nenhum modelo produziu um unico fold valido em toda a validacao "
+            "cruzada. Nenhum modelo foi treinado ou guardado."
+        )
+        lines.append("")
+        with open(REPORT_PATH, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines))
+        print(f"Relatorio de validacao guardado em: {REPORT_PATH}")
+        return
+
+    lines.append("## Metricas medias por modelo (media +/- desvio-padrao entre folds validos)")
     lines.append("")
-    lines.append("| Modelo | Accuracy | Precision | Recall | F1 | ROC-AUC |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append(
+        "| Modelo | Folds validos | Folds ignorados | Accuracy | Precision | Recall | F1 | ROC-AUC |"
+    )
+    lines.append("|---|---|---|---|---|---|---|---|")
 
     sort_key = "auc" if selection_metric == "auc_mean" else "f1"
+    available_summaries = [
+        (name, summary) for name, summary in metrics_summary.items() if summary is not None
+    ]
     sorted_models = sorted(
-        metrics_summary.items(),
+        available_summaries,
         key=lambda item: -(
             item[1][sort_key]["mean"] if item[1][sort_key]["mean"] is not None else -1
         ),
@@ -436,7 +578,8 @@ def write_validation_report(
             else "N/A"
         )
         lines.append(
-            f"| {name}{marker} | {fmt(summary['accuracy'])} | {fmt(summary['precision'])} | "
+            f"| {name}{marker} | {summary['n_folds_valid']} | {summary['n_folds_invalid']} | "
+            f"{fmt(summary['accuracy'])} | {fmt(summary['precision'])} | "
             f"{fmt(summary['recall'])} | {fmt(summary['f1'])} | {auc_str} |"
         )
     lines.append("")
@@ -449,7 +592,7 @@ def write_validation_report(
         + (
             ""
             if selection_metric == "auc_mean"
-            else " (ROC-AUC nao pode ser calculada em nenhum fold)"
+            else " (ROC-AUC nao pode ser calculada em nenhum fold valido)"
         )
     )
     lines.append("")
@@ -459,13 +602,19 @@ def write_validation_report(
     for name in per_model_fold_metrics:
         lines.append(f"### {name}")
         lines.append("")
-        lines.append("| Fold | Accuracy | Precision | Recall | F1 | ROC-AUC |")
-        lines.append("|---|---|---|---|---|---|")
+        lines.append("| Fold | Valido | Accuracy | Precision | Recall | F1 | ROC-AUC | Motivo |")
+        lines.append("|---|---|---|---|---|---|---|---|")
         for fm in per_model_fold_metrics[name]:
-            auc_cell = f"{fm['auc']:.4f}" if fm["auc"] is not None else "N/A (1 classe)"
+            if not fm["valid"]:
+                lines.append(
+                    f"| {fm['fold']} | Nao | - | - | - | - | - | {fm['failure_reason']} |"
+                )
+                continue
+            auc_cell = f"{fm['auc']:.4f}" if fm["auc"] is not None else "N/A"
+            motivo = fm["auc_skipped_reason"] or ""
             lines.append(
-                f"| {fm['fold']} | {fm['accuracy']:.4f} | {fm['precision']:.4f} | "
-                f"{fm['recall']:.4f} | {fm['f1']:.4f} | {auc_cell} |"
+                f"| {fm['fold']} | Sim | {fm['accuracy']:.4f} | {fm['precision']:.4f} | "
+                f"{fm['recall']:.4f} | {fm['f1']:.4f} | {auc_cell} | {motivo} |"
             )
         lines.append("")
 
@@ -488,15 +637,60 @@ def main():
         per_model_fold_importance,
     ) = cross_validate(X, y, groups)
 
-    metrics_summary = aggregate_metrics(per_model_fold_metrics)
+    metrics_summary, excluded_models = aggregate_metrics(per_model_fold_metrics)
     importance_summary = aggregate_importance(per_model_fold_importance)
 
-    best_model_name, selection_metric, best_score = select_best_model(metrics_summary)
+    if excluded_models:
+        print("=" * 60)
+        print("MODELOS EXCLUIDOS (sem nenhum fold valido)")
+        print("=" * 60)
+        for name, info in excluded_models.items():
+            print(f"{name}: {info['n_folds_invalid']}/{info['n_folds_total']} folds falharam")
+        print()
+
+    try:
+        best_model_name, selection_metric, best_score = select_best_model(metrics_summary)
+    except NoValidModelError as exc:
+        print("=" * 60)
+        print(f"ERRO: {exc}")
+        print("Nenhum modelo foi treinado nem guardado.")
+        print("=" * 60)
+
+        write_metrics(
+            splitter_name,
+            n_splits,
+            n_matches_total,
+            n_snapshots_total,
+            fold_reports,
+            per_model_fold_metrics,
+            {},
+            excluded_models,
+            None,
+            None,
+            None,
+        )
+        write_feature_importance(importance_summary)
+        write_validation_report(
+            splitter_name,
+            n_splits,
+            n_matches_total,
+            n_snapshots_total,
+            fold_reports,
+            per_model_fold_metrics,
+            {},
+            excluded_models,
+            None,
+            None,
+            None,
+        )
+        sys.exit(1)
 
     print("=" * 60)
-    print("RESUMO DA VALIDACAO CRUZADA (media +/- desvio-padrao entre folds)")
+    print("RESUMO DA VALIDACAO CRUZADA (media +/- desvio-padrao entre folds validos)")
     print("=" * 60)
     for name, summary in metrics_summary.items():
+        if summary is None:
+            continue
         auc_stat = summary["auc"]
         auc_str = (
             f"{auc_stat['mean']:.4f}+/-{auc_stat['std']:.4f}(n={auc_stat['n_folds']})"
@@ -504,7 +698,8 @@ def main():
             else "N/A"
         )
         print(
-            f"{name:25s} AUC={auc_str:26s} "
+            f"{name:25s} folds_validos={summary['n_folds_valid']}/{summary['n_folds_total']} "
+            f"AUC={auc_str:26s} "
             f"Accuracy={summary['accuracy']['mean']:.4f}+/-{summary['accuracy']['std']:.4f} "
             f"Precision={summary['precision']['mean']:.4f}+/-{summary['precision']['std']:.4f} "
             f"Recall={summary['recall']['mean']:.4f}+/-{summary['recall']['std']:.4f} "
@@ -517,11 +712,51 @@ def main():
     print()
 
     # Retreino final do modelo vencedor com 100% dos dados disponiveis
-    # (mesma classe e mesmos hiperparametros de build_models(), sem qualquer
-    # fold de validacao envolvido nesta ultima passagem).
+    # (mesma classe e mesmos hiperparametros de build_models()). So chega
+    # aqui um modelo com pelo menos um fold valido na validacao cruzada.
+    # Protegido tambem por try/except: se mesmo assim falhar, nao gravamos
+    # um .pkl parcial e terminamos com erro claro (regra 6/7 do pedido).
     final_models = build_models()
     final_model = final_models[best_model_name]
-    final_model.fit(X, y)
+    try:
+        final_model.fit(X, y)
+    except Exception as exc:
+        print("=" * 60)
+        print(
+            f"ERRO: retreino final de {best_model_name} com 100% dos dados falhou: "
+            f"{_short_error(exc)}"
+        )
+        print("Nenhum modelo foi guardado.")
+        print("=" * 60)
+
+        write_metrics(
+            splitter_name,
+            n_splits,
+            n_matches_total,
+            n_snapshots_total,
+            fold_reports,
+            per_model_fold_metrics,
+            metrics_summary,
+            excluded_models,
+            best_model_name,
+            selection_metric,
+            best_score,
+        )
+        write_feature_importance(importance_summary)
+        write_validation_report(
+            splitter_name,
+            n_splits,
+            n_matches_total,
+            n_snapshots_total,
+            fold_reports,
+            per_model_fold_metrics,
+            metrics_summary,
+            excluded_models,
+            best_model_name,
+            selection_metric,
+            best_score,
+        )
+        sys.exit(1)
 
     os.makedirs(os.path.dirname(MODEL_PATH), exist_ok=True)
     joblib.dump(final_model, MODEL_PATH)
@@ -535,6 +770,7 @@ def main():
         fold_reports,
         per_model_fold_metrics,
         metrics_summary,
+        excluded_models,
         best_model_name,
         selection_metric,
         best_score,
@@ -548,6 +784,7 @@ def main():
         fold_reports,
         per_model_fold_metrics,
         metrics_summary,
+        excluded_models,
         best_model_name,
         selection_metric,
         best_score,
