@@ -40,14 +40,14 @@ class BSDLiveFetcher:
         home_stats = stats.get("home", {})
         away_stats = stats.get("away", {})
 
-        da_home = home_stats.get("dangerous_attacks", 0)
-        da_away = away_stats.get("dangerous_attacks", 0)
+        da_home = home_stats.get("dangerous_attacks") or 0
+        da_away = away_stats.get("dangerous_attacks") or 0
 
-        sot_home = home_stats.get("shots_on_target", 0)
-        sot_away = away_stats.get("shots_on_target", 0)
+        sot_home = home_stats.get("shots_on_target") or 0
+        sot_away = away_stats.get("shots_on_target") or 0
 
-        corners_home = home_stats.get("corners", 0)
-        corners_away = away_stats.get("corners", 0)
+        corners_home = home_stats.get("corners") or 0
+        corners_away = away_stats.get("corners") or 0
 
         fallback_shots = int((sot_home + sot_away) * 1.8 + (corners_home + corners_away) * 0.5)
         fallback_shots = max(1, fallback_shots)
@@ -70,9 +70,9 @@ class BSDLiveFetcher:
 
             "current_minute": int(event.get("current_minute") or event.get("minute") or 0),
 
-            "home_score": event.get("home_score",0),
+            "home_score": event.get("home_score") or 0,
 
-            "away_score": event.get("away_score",0),
+            "away_score": event.get("away_score") or 0,
 
 
             "home_xg_last5":1.65,
