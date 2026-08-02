@@ -1,8 +1,6 @@
 name: Automatic Live Goal Logger & Engine
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
