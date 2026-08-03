@@ -9,7 +9,7 @@ alguns endpoints podem devolver o array diretamente ou envolvido em
 módulo aceita ambas as formas defensivamente.
 """
 
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Callable, Dict, Iterator, Optional
 
 DEFAULT_PAGE_SIZE = 100
 
@@ -34,6 +34,7 @@ def iter_endpoint(
     params: Optional[Dict[str, Any]] = None,
     page_size: int = DEFAULT_PAGE_SIZE,
     max_pages: Optional[int] = None,
+    page_callback: Optional[Callable[[int, int], None]] = None,
 ) -> Iterator[Dict[str, Any]]:
     """
     Itera todos os itens de um endpoint paginado, avançando `offset` em
@@ -42,6 +43,10 @@ def iter_endpoint(
 
     `max_pages`, se fornecido, limita o número de páginas pedidas (útil em
     testes ou para limitar o âmbito de uma execução manual).
+
+    `page_callback`, se fornecido, é invocado após cada página obtida com
+    `(page_number, items_count)` (1-indexado) — usado apenas para reportar
+    progresso (ex. CLI); não afeta a paginação em si.
     """
     base_params = dict(params or {})
     offset = 0
@@ -58,10 +63,13 @@ def iter_endpoint(
         if not items:
             return
 
+        pages_fetched += 1
+        if page_callback is not None:
+            page_callback(pages_fetched, len(items))
+
         for item in items:
             yield item
 
-        pages_fetched += 1
         if max_pages is not None and pages_fetched >= max_pages:
             return
 

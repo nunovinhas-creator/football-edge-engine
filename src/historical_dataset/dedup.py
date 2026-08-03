@@ -20,15 +20,23 @@ class Deduplicator:
 
     def __init__(self):
         self._seen: Set[Hashable] = set()
+        self._duplicate_count = 0
 
     def is_duplicate(self, key: Hashable) -> bool:
-        return key in self._seen
+        found = key in self._seen
+        if found:
+            self._duplicate_count += 1
+        return found
 
     def add(self, key: Hashable) -> None:
         self._seen.add(key)
 
     def seen_count(self) -> int:
         return len(self._seen)
+
+    def duplicate_count(self) -> int:
+        """Nº de vezes que `is_duplicate` detetou uma chave já vista (para relatórios de qualidade)."""
+        return self._duplicate_count
 
 
 def dedupe_records(records: Iterable[dict], key_fn=lambda r: r.get("event_id")) -> Iterator[dict]:

@@ -86,6 +86,31 @@ class TestBSDHistoricalClient(unittest.TestCase):
 
         rate_limiter.acquire.assert_called_once()
 
+    def test_request_count_starts_at_zero(self):
+        client = BSDHistoricalClient(api_key="k")
+        self.assertEqual(client.request_count, 0)
+
+    def test_request_count_increments_on_each_successful_request(self):
+        client = BSDHistoricalClient(api_key="k")
+
+        with patch("src.historical_dataset.client.get_with_retry") as mock_get:
+            mock_get.return_value = _fake_response(json_body=[])
+            client.get("leagues/")
+            client.get("events/")
+
+        self.assertEqual(client.request_count, 2)
+
+    def test_request_count_increments_even_on_4xx(self):
+        """A contagem reflete pedidos feitos, não apenas os bem-sucedidos (para dataset_report.json)."""
+        client = BSDHistoricalClient(api_key="k")
+
+        with patch("src.historical_dataset.client.get_with_retry") as mock_get:
+            mock_get.return_value = _fake_response(status_code=404, text="not found")
+            with self.assertRaises(BSDAPIError):
+                client.get("events/999/")
+
+        self.assertEqual(client.request_count, 1)
+
 
 if __name__ == "__main__":
     unittest.main()

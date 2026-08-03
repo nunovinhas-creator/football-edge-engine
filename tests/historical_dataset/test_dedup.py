@@ -26,6 +26,21 @@ class TestDeduplicator(unittest.TestCase):
         dedup.add(1)  # repetido, não conta duas vezes
         self.assertEqual(dedup.seen_count(), 2)
 
+    def test_duplicate_count_starts_at_zero(self):
+        dedup = Deduplicator()
+        self.assertEqual(dedup.duplicate_count(), 0)
+
+    def test_duplicate_count_increments_only_on_detected_duplicates(self):
+        dedup = Deduplicator()
+        dedup.add(1)
+        dedup.is_duplicate(2)  # não visto, não conta
+        dedup.is_duplicate(1)  # duplicado
+        dedup.add(2)
+        dedup.is_duplicate(1)  # duplicado outra vez
+        dedup.is_duplicate(2)  # duplicado
+
+        self.assertEqual(dedup.duplicate_count(), 3)
+
 
 class TestDedupeRecords(unittest.TestCase):
 

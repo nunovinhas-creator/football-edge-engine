@@ -1,0 +1,115 @@
+name: Build Historical Dataset (BSD API)
+
+# Apenas execução manual — sem schedule e sem trigger em push. A recolha
+# histórica real é sempre iniciada deliberadamente pelo utilizador (ver
+# docs/08_historical_dataset_workflow.md).
+on:
+  workflow_dispatch:
+    inputs:
+      competition_id:
+        description: "ID da competição/liga na BSD API (vazio = todas as ligas ativas)"
+        required: false
+        type: string
+      season_id:
+        description: "ID da época (season_id) (vazio = todas as épocas da competição)"
+        required: false
+        type: string
+      output_format:
+        description: "Formato(s) de exportação"
+        required: false
+        type: choice
+        options:
+          - csv
+          - sqlite
+          - parquet
+          - all
+        default: all
+      page_size:
+        description: "Tamanho de página nos pedidos paginados à BSD API"
+        required: false
+        type: string
+        default: "100"
+      resume:
+        description: "Ativar checkpoint/resume desta execução"
+        required: false
+        type: choice
+        options:
+          - "true"
+          - "false"
+        default: "false"
+
+permissions:
+  contents: read
+
+jobs:
+  build-historical-dataset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Construir dataset histórico (Historical Dataset Builder)
+        env:
+          PYTHONPATH: .
+          # Inputs passados via variáveis de ambiente (não interpolados
+          # diretamente em `run:`) para evitar injeção de shell a partir de
+          # um input de workflow_dispatch.
+          INPUT_COMPETITION_ID: ${{ inputs.competition_id }}
+          INPUT_SEASON_ID: ${{ inputs.season_id }}
+          INPUT_OUTPUT_FORMAT: ${{ inputs.output_format }}
+          INPUT_PAGE_SIZE: ${{ inputs.page_size }}
+          INPUT_RESUME: ${{ inputs.resume }}
+          # Mesma chave, nos 4 nomes aceites por src/config/settings.py
+          # (mesma convenção dos workflows já existentes). O GitHub mascara
+          # automaticamente valores de secrets nos logs; este workflow
+          # também nunca imprime a chave, o header Authorization nem
+          # qualquer token explicitamente (ver ProgressLogger em
+          # src/historical_dataset/cli.py).
+          BSD_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          BZZ_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          CMD=(python build_historical_dataset.py
+            --output-dir data/historical
+            --base-name historical
+            --output "$INPUT_OUTPUT_FORMAT"
+            --page-size "$INPUT_PAGE_SIZE"
+            --resume "$INPUT_RESUME")
+
+          if [ -n "$INPUT_COMPETITION_ID" ]; then
+            CMD+=(--competition-id "$INPUT_COMPETITION_ID")
+          fi
+          if [ -n "$INPUT_SEASON_ID" ]; then
+            CMD+=(--season-id "$INPUT_SEASON_ID")
+          fi
+
+          "${CMD[@]}"
+
+      - name: Upload de artefactos (apenas os ficheiros que existirem)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-dataset-${{ github.run_id }}
+          path: |
+            data/historical/historical.csv
+            data/historical/historical.sqlite
+            data/historical/historical.parquet
+            data/historical/dataset_report.json
+          if-no-files-found: ignore
+          retention-days: 30

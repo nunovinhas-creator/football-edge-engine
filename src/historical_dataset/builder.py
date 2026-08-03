@@ -40,6 +40,7 @@ class HistoricalDatasetBuilder:
         include_stats: bool = True,
         include_odds_comparison: bool = False,
         on_error: Optional[Callable[[str, Optional[int], Exception], None]] = None,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ):
         self.client = client or BSDHistoricalClient()
         self.checkpoint = checkpoint or NullCheckpoint()
@@ -49,6 +50,7 @@ class HistoricalDatasetBuilder:
         self.include_odds_comparison = include_odds_comparison
         self.dedup = Deduplicator()
         self._on_error = on_error or _default_on_error
+        self._progress = progress_callback or (lambda event_type, data: None)
 
     def iter_competitions(
         self,
@@ -71,12 +73,19 @@ class HistoricalDatasetBuilder:
         payload = self.client.get(f"leagues/{league_id}/seasons/")
         return extract_items(payload) if isinstance(payload, dict) else (payload or [])
 
-    def iter_finished_events(self, league_id: int, season_id: Optional[int]) -> Iterator[Dict[str, Any]]:
+    def iter_finished_events(
+        self,
+        league_id: int,
+        season_id: Optional[int],
+        page_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Iterator[Dict[str, Any]]:
         """Itera jogos com `status=finished` de uma liga/época (`/api/v2/events/`)."""
         params = {"league_id": league_id, "status": "finished"}
         if season_id is not None:
             params["season_id"] = season_id
-        yield from iter_endpoint(self.client, "events/", params=params, page_size=self.page_size)
+        yield from iter_endpoint(
+            self.client, "events/", params=params, page_size=self.page_size, page_callback=page_callback
+        )
 
     def _safe_get(self, endpoint: str, stage: str, event_id: Optional[int]) -> Any:
         try:
@@ -103,6 +112,7 @@ class HistoricalDatasetBuilder:
         self,
         leagues: Optional[Iterable[LeagueLike]] = None,
         max_events: Optional[int] = None,
+        season_ids: Optional[Iterable[int]] = None,
     ) -> Iterator[Dict[str, Any]]:
         """
         Gera registos normalizados (um dict por jogo terminado), streaming.
@@ -115,21 +125,53 @@ class HistoricalDatasetBuilder:
         chamada (útil para execuções parciais/testes); jogos e épocas já
         concluídos ficam registados no checkpoint tal como numa execução
         completa.
+
+        `season_ids`: subconjunto opcional de épocas (por `id`) — por
+        omissão percorre todas as épocas de cada liga. Épocas fora deste
+        conjunto são ignoradas antes de qualquer pedido a `/events/`.
+
+        Se `progress_callback` tiver sido passado ao construtor, é invocado
+        com `(event_type, data)` em pontos-chave (`competition_start`,
+        `season_start`, `page`, `event`, `season_done`) — usado apenas para
+        reportar progresso (ex. CLI/logging), não afeta o resultado.
         """
         emitted = 0
+        odds_processed = 0
+        season_id_filter = set(season_ids) if season_ids is not None else None
         source_leagues = leagues if leagues is not None else self.iter_competitions()
 
         for league in source_leagues:
             league_dict = league if isinstance(league, dict) else {"id": league}
             league_id = league_dict["id"]
+            self._progress("competition_start", {"league_id": league_id, "league_name": league_dict.get("name")})
 
             for season in self.iter_seasons(league_id):
                 season_id = season.get("id") if isinstance(season, dict) else season
 
+                if season_id_filter is not None and season_id not in season_id_filter:
+                    continue
+
                 if self.checkpoint.is_season_done(league_id, season_id):
                     continue
 
-                for event in self.iter_finished_events(league_id, season_id):
+                season_dict = season if isinstance(season, dict) else {"id": season_id}
+                self._progress(
+                    "season_start",
+                    {"league_id": league_id, "season_id": season_id, "season_name": season_dict.get("name")},
+                )
+
+                def _on_page(page_number: int, items_count: int, _league_id=league_id, _season_id=season_id) -> None:
+                    self._progress(
+                        "page",
+                        {
+                            "league_id": _league_id,
+                            "season_id": _season_id,
+                            "page_number": page_number,
+                            "items_count": items_count,
+                        },
+                    )
+
+                for event in self.iter_finished_events(league_id, season_id, page_callback=_on_page):
                     event_id = event.get("id")
 
                     if self.dedup.is_duplicate(event_id) or self.checkpoint.is_event_done(event_id):
@@ -140,26 +182,40 @@ class HistoricalDatasetBuilder:
                     comparison = (
                         self.fetch_odds_comparison(event_id) if self.include_odds_comparison else None
                     )
+                    if odds is not None:
+                        odds_processed += 1
 
                     record = normalize_event(
                         event,
                         odds=odds,
                         stats=stats,
                         league=league_dict,
-                        season=season if isinstance(season, dict) else {"id": season_id},
+                        season=season_dict,
                         odds_comparison=comparison,
                     )
 
                     self.dedup.add(event_id)
                     self.checkpoint.mark_event_done(event_id)
 
-                    yield record
                     emitted += 1
+                    self._progress(
+                        "event",
+                        {
+                            "league_id": league_id,
+                            "season_id": season_id,
+                            "event_id": event_id,
+                            "games_processed": emitted,
+                            "odds_processed": odds_processed,
+                        },
+                    )
+
+                    yield record
 
                     if max_events is not None and emitted >= max_events:
                         return
 
                 self.checkpoint.mark_season_done(league_id, season_id)
+                self._progress("season_done", {"league_id": league_id, "season_id": season_id})
 
     def build_to_list(self, **kwargs) -> list:
         """Conveniência: materializa `build(...)` numa lista (execuções pequenas/testes)."""

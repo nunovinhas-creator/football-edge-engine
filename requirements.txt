@@ -11,3 +11,4 @@ openpyxl
 streamlit
 plotly
 rich
+pyyaml

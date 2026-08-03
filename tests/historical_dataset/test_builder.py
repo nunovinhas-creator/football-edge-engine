@@ -159,6 +159,81 @@ class TestHistoricalDatasetBuilder(unittest.TestCase):
         self.assertEqual(errors, [])  # 404 não é reportado como erro
 
 
+class TestHistoricalDatasetBuilderSeasonFilter(unittest.TestCase):
+
+    def test_season_ids_filters_out_other_seasons(self):
+        client = _make_client()
+        client.seasons_by_league[39].append({"id": 2023, "name": "2022/2023"})
+        client.events_by_season[(39, 2023)] = [
+            {"id": 99, "league_id": 39, "season_id": 2023, "home_team": "X", "away_team": "Y",
+             "event_date": "2023-01-01T00:00:00Z", "status": "finished", "home_score": 1, "away_score": 1,
+             "home_score_ht": 0, "away_score_ht": 0},
+        ]
+        builder = HistoricalDatasetBuilder(client=client)
+
+        records = builder.build_to_list(season_ids=[2024])
+
+        self.assertEqual({r["event_id"] for r in records}, {1, 2})
+        self.assertFalse(any(endpoint == "events/" and params.get("season_id") == 2023 for endpoint, params in client.calls))
+
+    def test_season_ids_none_keeps_all_seasons(self):
+        client = _make_client()
+        builder = HistoricalDatasetBuilder(client=client)
+
+        records = builder.build_to_list(season_ids=None)
+
+        self.assertEqual(len(records), 2)
+
+
+class TestHistoricalDatasetBuilderProgressCallback(unittest.TestCase):
+
+    def test_emits_expected_event_types_in_order(self):
+        client = _make_client()
+        events = []
+        builder = HistoricalDatasetBuilder(
+            client=client, progress_callback=lambda event_type, data: events.append((event_type, data))
+        )
+
+        builder.build_to_list()
+
+        event_types = [e[0] for e in events]
+        self.assertEqual(
+            event_types,
+            ["competition_start", "season_start", "page", "event", "event", "season_done"],
+        )
+
+    def test_event_progress_carries_running_counts(self):
+        client = _make_client()
+        events = []
+        builder = HistoricalDatasetBuilder(
+            client=client, progress_callback=lambda event_type, data: events.append((event_type, data))
+        )
+
+        builder.build_to_list()
+
+        event_payloads = [data for etype, data in events if etype == "event"]
+        self.assertEqual([e["games_processed"] for e in event_payloads], [1, 2])
+        self.assertEqual([e["odds_processed"] for e in event_payloads], [1, 2])
+
+    def test_page_event_reports_page_number_and_items_count(self):
+        client = _make_client()
+        events = []
+        builder = HistoricalDatasetBuilder(
+            client=client, progress_callback=lambda event_type, data: events.append((event_type, data))
+        )
+
+        builder.build_to_list()
+
+        page_events = [data for etype, data in events if etype == "page"]
+        self.assertEqual(page_events, [{"league_id": 39, "season_id": 2024, "page_number": 1, "items_count": 2}])
+
+    def test_no_progress_callback_is_a_safe_no_op(self):
+        client = _make_client()
+        builder = HistoricalDatasetBuilder(client=client)  # sem progress_callback
+        records = builder.build_to_list()
+        self.assertEqual(len(records), 2)
+
+
 class TestHistoricalDatasetBuilderCheckpointResume(unittest.TestCase):
 
     def setUp(self):
