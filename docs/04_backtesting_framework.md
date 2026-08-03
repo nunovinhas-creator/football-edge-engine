@@ -38,6 +38,12 @@ Coexiste com o `src/backtest/` já existente (`backtester.py`, `logger.py`,
 `labeler.py`, `market.py`), que é específico da estratégia de pressão ao
 vivo — este framework é genérico, para qualquer mercado/decisão histórica.
 
+Ver também `docs/06_model_evaluation.md` — o Framework de Avaliação
+Quantitativa (`src/evaluation/`), que consome este módulo (sem alterar
+nenhuma das suas fórmulas) e acrescenta segmentação por mês/faixa de
+confiança, comparação objetiva entre execuções, exportação Markdown e
+gráficos adicionais.
+
 ---
 
 ## Dataset de jogos históricos (`dataset.py`)
