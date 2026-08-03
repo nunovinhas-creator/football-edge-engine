@@ -45,6 +45,8 @@ class HistoricalBet:
     engine_decision: str
     result: Any
     competition: Optional[str] = None
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
     home_or_away: Optional[str] = None
     is_favorite: Optional[bool] = None
     extra: Dict[str, Any] = field(default_factory=dict)
@@ -96,6 +98,8 @@ class HistoricalBet:
             "engine_decision": ("engine_decision", "decisao", "decisao_motor", "decision"),
             "result": ("result", "resultado", "resultado_real"),
             "competition": ("competition", "competicao", "liga", "league"),
+            "home_team": ("home_team", "equipa_casa", "casa", "home"),
+            "away_team": ("away_team", "equipa_visitante", "visitante", "fora", "away"),
             "home_or_away": ("home_or_away", "casa_fora", "venue"),
             "is_favorite": ("is_favorite", "favorito"),
         }
@@ -114,8 +118,20 @@ class HistoricalBet:
         known_keys = {alias for group in aliases.values() for alias in group}
         extra = {k: v for k, v in row.items() if k not in known_keys}
 
+        home_team = pick("home_team", required=False)
+        away_team = pick("away_team", required=False)
+        match_value = pick("match", required=False)
+        if not match_value:
+            if home_team and away_team:
+                match_value = f"{home_team} vs {away_team}"
+            else:
+                raise KeyError(
+                    "Campo obrigatório em falta: match (aceite 'match'/'jogo'/'game', "
+                    "ou em alternativa 'home_team'+'away_team')"
+                )
+
         return cls(
-            match=pick("match"),
+            match=match_value,
             date=pick("date"),
             market=pick("market"),
             odd=float(pick("odd")),
@@ -123,6 +139,8 @@ class HistoricalBet:
             engine_decision=pick("engine_decision"),
             result=pick("result"),
             competition=pick("competition", required=False),
+            home_team=home_team,
+            away_team=away_team,
             home_or_away=pick("home_or_away", required=False),
             is_favorite=pick("is_favorite", required=False),
             extra=extra,
@@ -162,12 +180,17 @@ class EvaluatedBet:
     won: bool
     profit: float
 
+    home_team: Optional[str] = None
+    away_team: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "match": self.match,
             "date": self.date,
-            "market": self.market,
             "competition": self.competition,
+            "home_team": self.home_team,
+            "away_team": self.away_team,
+            "market": self.market,
             "home_or_away": self.home_or_away,
             "is_favorite": self.is_favorite,
             "odd": self.odd,

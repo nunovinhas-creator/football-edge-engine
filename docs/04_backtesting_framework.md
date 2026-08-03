@@ -13,24 +13,82 @@ não prever.
 ```
 src/backtest/historical/
     models.py       # HistoricalBet / EvaluatedBet (contrato de dados)
+    dataset.py         # carregamento/normalização de jogos históricos (CSV) para o BacktestEngine
     staking.py       # FlatStake / KellyStake (gestão de banca opcional)
     evaluator.py      # cálculo por aposta (edge/ev/kelly/stake/profit)
     metrics.py        # ROI, Yield, Drawdown, Profit Factor, etc.
     statistics.py      # Brier Score, Log Loss, ECE, calibração, distribuições
     segments.py        # análises por competição/mercado/odd/edge/ev/favorito/casa-fora
     thresholds.py       # threshold analysis (Edge/EV >= X%)
-    report.py           # BacktestReport: tabela resumo, CSV, Excel, gráficos
+    report.py           # BacktestReport: tabela resumo, CSV, Excel, HTML, gráficos
     engine.py            # BacktestEngine — orquestrador / ponto de entrada único
     sample_data.py         # gerador de dataset sintético para demonstração/testes
 
+run_backtest.py              # CLI: backtest completo / por data / competição / mercado
+examples/backtest/
+    sample_real_games.csv      # pequeno conjunto de jogos históricos REAIS (ver secção "Dataset")
+
 tests/backtest/
     test_metrics.py, test_statistics.py, test_evaluator.py,
-    test_thresholds_and_segments.py, test_integration.py
+    test_thresholds_and_segments.py, test_integration.py,
+    test_dataset.py, test_dataset_e2e.py
 ```
 
 Coexiste com o `src/backtest/` já existente (`backtester.py`, `logger.py`,
 `labeler.py`, `market.py`), que é específico da estratégia de pressão ao
 vivo — este framework é genérico, para qualquer mercado/decisão histórica.
+
+---
+
+## Dataset de jogos históricos (`dataset.py`)
+
+`src/backtest/historical/dataset.py` carrega jogos históricos e prepara-os
+para o `BacktestEngine` **sem alterar nenhum algoritmo de previsão** —
+consome apenas o que já foi produzido pelo motor (probabilidade, odd,
+decisão), ou dados que decorrem diretamente do resultado real do jogo:
+
+- `load_historical_dataset(source, ...)` — ponto de entrada único. Aceita
+  um caminho para CSV, um `DataFrame` ou uma lista de dicts, e devolve um
+  `DataFrame` normalizado pronto para `BacktestEngine.run(...)`. Aceita
+  aliases em português ou inglês para todas as colunas (tal como
+  `HistoricalBet.from_dict`).
+- `filter_dataset(df, start_date=, end_date=, competition=, market=)` —
+  filtra o dataset já normalizado; usado pelo CLI `run_backtest.py`.
+- `infer_market_result(market, home_goals, away_goals)` — deriva
+  "WIN"/"LOSS" para HOME/DRAW/AWAY, OVER_X.X/UNDER_X.X e BTTS a partir do
+  resultado final do jogo (golos casa/fora); é apenas uma tabela de
+  mapeamento sobre um resultado já ocorrido, não uma previsão.
+
+O projeto ainda não tem uma integração própria com uma fonte de jogos
+históricos com odds e resultados (as fontes existentes — `src.api`,
+`src.collector` — servem eventos futuros/ao vivo, não um arquivo
+histórico); por isso a via suportada é **CSV**, com o seguinte esquema
+mínimo:
+
+| Coluna (EN)    | Alias (PT)                        | Obrigatória | Descrição                                             |
+|-----------------|-------------------------------------|:-----------:|---------------------------------------------------------|
+| `date`          | `data`                              | sim          | data do jogo                                              |
+| `competition`   | `competicao`, `liga`, `league`        | sim          | competição                                                  |
+| `home_team`     | `equipa_casa`, `casa`                  | sim          | equipa da casa                                               |
+| `away_team`     | `equipa_visitante`, `visitante`, `fora`  | sim          | equipa visitante                                              |
+| `market`        | `mercado`                              | sim          | mercado recomendado (ex. `HOME`, `OVER_2.5`)                    |
+| `odd`           | `odd_disponivel`, `bookie_odd`           | sim          | odd disponível no momento da previsão                             |
+| `model_prob`    | `probabilidade`, `prob_model`             | sim          | probabilidade prevista pelo motor (fração 0.0-1.0)                  |
+| `home_goals`    | `golos_casa`                                | não\*        | golos da equipa da casa no final do jogo                             |
+| `away_goals`    | `golos_fora`                                | não\*        | golos da equipa visitante no final do jogo                            |
+| `result`        | `resultado`                                  | não\*        | resultado final do mercado ("WIN"/"LOSS"), se já conhecido               |
+| `engine_decision` | `decisao`                                  | não          | decisão histórica do motor ("BET"/"PASS"/"WAIT"), se já conhecida           |
+
+\* É necessário fornecer `result`/`resultado` OU `home_goals`+`away_goals`
+(o resultado do mercado é derivado automaticamente do resultado final via
+`infer_market_result` quando `result` está ausente).
+
+Quando `engine_decision` está ausente, é preenchida chamando o
+`DecisionEngine` real (`src.engine.decision`) sobre `model_prob` e `odd` —
+a mesma decisão que o motor de previsão já produziria para esses valores.
+Edge, EV e Kelly **nunca** são calculados em `dataset.py`: continuam a ser
+calculados exclusivamente por `evaluator.py`, a partir de
+`src.engine.edge` / `src.engine.kelly`, tal como no resto do framework.
 
 ---
 
@@ -50,7 +108,13 @@ mínimo (aceita chaves em português ou inglês):
 | `resultado`               | `result`           | "WIN"/"LOSS" (ou bool/1-0)                            |
 
 Campos opcionais para segmentação: `competicao`/`competition`,
-`venue`/`home_or_away`, `favorito`/`is_favorite`.
+`equipa_casa`/`home_team`, `equipa_visitante`/`away_team`,
+`venue`/`home_or_away`, `favorito`/`is_favorite`. Quando `home_team` e
+`away_team` estão presentes (é o caso quando os dados vêm de
+`dataset.load_historical_dataset`), `match`/`jogo` é derivado
+automaticamente como `"<home_team> vs <away_team>"` se não for fornecido
+explicitamente, e ambos os campos são preservados em `EvaluatedBet` (logo,
+também nos CSV/Excel/HTML exportados por `BacktestReport`).
 
 ## Contrato de saída
 
@@ -86,18 +150,51 @@ Campos opcionais para segmentação: `competicao`/`competition`,
 
 ```python
 from src.backtest.historical import BacktestEngine, FlatStake, KellyStake
+from src.backtest.historical.dataset import load_historical_dataset, filter_dataset
 
-# dados: lista de dicts (aceita chaves PT/EN) ou pandas.DataFrame
+# 1. Carregar jogos históricos (CSV, DataFrame ou lista de dicts — ver secção "Dataset")
+dados = load_historical_dataset("examples/backtest/sample_real_games.csv")
+
+# 2. (Opcional) Filtrar por data/competição/mercado
+dados = filter_dataset(dados, start_date="2015-01-01", competition="Champions League")
+
+# 3. Correr o BacktestEngine (sem tocar em nenhuma fórmula do motor)
 engine = BacktestEngine(staking=FlatStake(unit=1.0))
-report = engine.run(dados_historicos)
+report = engine.run(dados)
 
-report.print_summary()               # tabela resumo no terminal
-report.to_csv("output/backtest")     # bets.csv, summary.csv, segment_*.csv, ...
-report.to_excel("output/report.xlsx")  # opcional, requer openpyxl
-report.generate_all_plots("output/plots")  # equity curve, distribuições, calibração
+report.print_summary()                     # tabela resumo no terminal
+report.to_csv("output/backtest")           # bets.csv, summary.csv, segment_*.csv, ...
+report.to_excel("output/backtest/report.xlsx")  # opcional, requer openpyxl
+report.generate_all_plots("output/backtest/plots")  # equity curve, distribuições, calibração
+report.to_html("output/backtest/report.html", plots_dir="output/backtest/plots")  # relatório HTML autocontido
 ```
 
-Script de demonstração (dados sintéticos, ver secção seguinte):
+### CLI (`run_backtest.py`)
+
+```bash
+# Backtest completo sobre um CSV de jogos históricos
+python run_backtest.py --input meus_jogos.csv
+
+# Backtest por intervalo de datas
+python run_backtest.py --input meus_jogos.csv --start-date 2015-01-01 --end-date 2020-12-31
+
+# Backtest por competição
+python run_backtest.py --input meus_jogos.csv --competition "Premier League"
+
+# Backtest por mercado
+python run_backtest.py --input meus_jogos.csv --market OVER_2.5
+
+# Demo rápida com o pequeno conjunto de jogos históricos REAIS incluído no repositório
+python run_backtest.py --demo
+```
+
+Cada execução produz, em `--output-dir` (por omissão `output/backtest`):
+`bets.csv`, `summary.csv`, `segment_*.csv`, `edge_thresholds.csv`,
+`ev_thresholds.csv`, `backtest_report.xlsx`, `backtest_report.html` e
+`plots/*.png`. Ver `python run_backtest.py --help` para todas as opções
+(staking flat/Kelly, banca, etc.).
+
+Script de demonstração com dados totalmente sintéticos (ver secção seguinte):
 
 ```
 python -m src.tools.run_backtest_example [output_dir] --n-games 500 --seed 42
@@ -193,6 +290,7 @@ output_dir/
     ev_thresholds.csv              # threshold analysis (EV)
     segment_by_*.csv                # uma tabela por segmento
     backtest_report.xlsx              # tudo o que precede, num único Excel
+    backtest_report.html               # o mesmo conteúdo, em HTML autocontido (gráficos embutidos)
     plots/
         equity_curve.png
         probability_distribution.png
@@ -203,18 +301,67 @@ output_dir/
 
 ---
 
+## Exemplo com jogos históricos reais (`--demo`)
+
+`examples/backtest/sample_real_games.csv` contém um pequeno conjunto (8 jogos)
+de resultados históricos **reais e verificáveis publicamente** — datas,
+equipas e resultados finais verídicos (ex. Man Utd 1-6 Man City em
+23/10/2011, Barcelona 5-0 Real Madrid em 29/11/2010, a final da Champions
+League de 2019). As odds e a probabilidade do modelo associadas a cada
+jogo são ilustrativas — o repositório não contém um arquivo de odds
+históricas nem as probabilidades reais que o motor teria produzido nesse
+momento — servindo apenas para demonstrar e testar o pipeline completo de
+ponta a ponta (`run_backtest.py --demo`, e
+`tests/backtest/test_dataset_e2e.py`).
+
+```bash
+python run_backtest.py --demo
+```
+
+```
+A carregar dataset histórico de: examples/backtest/sample_real_games.csv
+Jogos carregados: 8
+Jogos após filtragem: 8
+========================================
+BACKTEST — RESUMO DE DESEMPENHO
+========================================
+n_bets              : 3
+wins                : 2
+losses              : 1
+hit_rate_pct        : 66.67
+...
+```
+
+Este exemplo real também permite exercitar os três modos de filtragem do
+CLI sobre o mesmo dataset:
+
+```bash
+python run_backtest.py --demo --start-date 2017-01-01 --end-date 2019-12-31  # 3 jogos
+python run_backtest.py --demo --competition "Champions League"                # 4 jogos
+python run_backtest.py --demo --market OVER_2.5                                # 2 jogos
+```
+
+---
+
 ## Testes
 
 - **Unitários** (`tests/backtest/test_metrics.py`,
   `test_statistics.py`, `test_evaluator.py`,
-  `test_thresholds_and_segments.py`): ROI, Yield, lucro líquido,
-  drawdown, Brier Score, Log Loss, ECE, edge médio, EV médio, threshold
-  analysis, segmentação — cada um com valores de referência calculados à
-  mão.
+  `test_thresholds_and_segments.py`, `test_dataset.py`): ROI, Yield, lucro
+  líquido, drawdown, Brier Score, Log Loss, ECE, edge médio, EV médio,
+  threshold analysis, segmentação, derivação do resultado do mercado e
+  normalização/filtragem do dataset histórico — cada um com valores de
+  referência calculados à mão.
 - **Integração** (`tests/backtest/test_integration.py`): executa
   `BacktestEngine` de ponta a ponta sobre um dataset sintético de 60-150
   jogos (`sample_data.generate_sample_dataset`), incluindo exportação
   para CSV, Excel e gráficos.
+- **End-to-end com jogos reais** (`tests/backtest/test_dataset_e2e.py`):
+  carrega `examples/backtest/sample_real_games.csv` (8 jogos históricos reais),
+  corre o pipeline completo — carregamento, filtragem por data/competição/
+  mercado, `BacktestEngine.run` e exportação para CSV/Excel/HTML/gráficos —
+  e valida os resultados de mercado esperados a partir dos resultados
+  finais reais desses jogos.
 
 Correr apenas os testes deste módulo:
 

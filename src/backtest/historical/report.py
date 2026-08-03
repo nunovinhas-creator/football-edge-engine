@@ -137,6 +137,79 @@ class BacktestReport:
                 segment_df.to_excel(writer, sheet_name=sheet_name, index=False)
         return path
 
+    def to_html(self, path: str, plots_dir: Optional[str] = None, title: str = "Backtest Report") -> str:
+        """
+        Gera um relatório HTML autocontido (tabela resumo, métricas
+        estatísticas, threshold analysis, segmentos e, opcionalmente, os
+        gráficos já gerados por `generate_all_plots`, embutidos como
+        imagens base64 para que o ficheiro seja portátil). Puramente de
+        apresentação — não recalcula nenhuma métrica.
+        """
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+        def _df_html(df: Optional[pd.DataFrame]) -> str:
+            if df is None or df.empty:
+                return "<p><em>Sem dados.</em></p>"
+            return df.to_html(index=False, border=0, classes="table", na_rep="-")
+
+        sections = [f"<h1>{title}</h1>"]
+
+        sections.append("<h2>Resumo Global</h2>")
+        sections.append(_df_html(self.summary_table()))
+
+        sections.append("<h2>Threshold Analysis — Edge</h2>")
+        sections.append(_df_html(self.edge_thresholds))
+
+        sections.append("<h2>Threshold Analysis — EV</h2>")
+        sections.append(_df_html(self.ev_thresholds))
+
+        sections.append("<h2>Curva de Calibração</h2>")
+        sections.append(_df_html(self.calibration_curve))
+
+        sections.append("<h2>Segmentos</h2>")
+        for name, segment_df in self.segments.items():
+            sections.append(f"<h3>{name}</h3>")
+            sections.append(_df_html(segment_df))
+
+        if plots_dir and os.path.isdir(plots_dir):
+            import base64
+
+            sections.append("<h2>Gráficos</h2>")
+            for filename in sorted(os.listdir(plots_dir)):
+                if not filename.lower().endswith(".png"):
+                    continue
+                with open(os.path.join(plots_dir, filename), "rb") as fh:
+                    encoded = base64.b64encode(fh.read()).decode("ascii")
+                sections.append(f"<h3>{filename}</h3>")
+                sections.append(f'<img alt="{filename}" src="data:image/png;base64,{encoded}">')
+
+        sections.append("<h2>Apostas (todas)</h2>")
+        sections.append(_df_html(self.all_bets))
+
+        body = "\n".join(sections)
+        html = f"""<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>{title}</title>
+<style>
+body {{ font-family: -apple-system, Arial, sans-serif; margin: 2rem; color: #1a1a1a; }}
+h1, h2, h3 {{ color: #0d1117; }}
+table.table {{ border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.85rem; }}
+table.table th, table.table td {{ border: 1px solid #ddd; padding: 4px 8px; text-align: right; }}
+table.table th {{ background: #f0f2f5; }}
+img {{ max-width: 100%; margin-bottom: 1.5rem; }}
+</style>
+</head>
+<body>
+{body}
+</body>
+</html>
+"""
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        return path
+
     # ------------------------------------------------------------------
     # Gráficos
     # ------------------------------------------------------------------

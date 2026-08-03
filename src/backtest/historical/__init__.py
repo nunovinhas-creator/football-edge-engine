@@ -20,6 +20,12 @@ Uso típico:
     report.generate_all_plots("output/backtest/plots")
 """
 
+from .dataset import (
+    filter_dataset,
+    infer_market_result,
+    load_games_from_csv,
+    load_historical_dataset,
+)
 from .engine import BacktestEngine, run_backtest
 from .evaluator import evaluate_bet, evaluate_bets
 from .models import EvaluatedBet, HistoricalBet, load_historical_bets
@@ -40,4 +46,8 @@ __all__ = [
     "FlatStake",
     "KellyStake",
     "StakingStrategy",
+    "load_historical_dataset",
+    "load_games_from_csv",
+    "filter_dataset",
+    "infer_market_result",
 ]
