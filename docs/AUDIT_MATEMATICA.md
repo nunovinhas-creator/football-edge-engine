@@ -936,3 +936,65 @@ como novo requisito concreto (não estava explícito antes desta secção): uma
 fonte de dados de golos por equipa ao longo de uma temporada completa (não
 apenas confrontos diretos entre duas equipas específicas), hoje ausente de
 qualquer caminho de recolha de dados do repositório.
+
+---
+
+## 17. Reauditoria de Edge (confirmação) e remoção de uma duplicação residual
+
+**Data:** 2026-08-03. Âmbito: nova auditoria completa a todos os pontos do
+repositório que calculam Edge, para confirmar se a unificação da secção 14
+se mantém válida e se o bug de `src/engine/market.py` continua corrigido.
+**Nenhuma fórmula do Dixon-Coles, Monte Carlo, λ, Kelly, Goal Engine,
+Machine Learning ou Decision Engine foi alterada** — apenas chamadas ao
+cálculo de Edge, conforme pedido.
+
+### 17.1 Resultado da auditoria
+
+Foram inspecionados todos os locais que referenciam "edge" no repositório
+(`src/engine/edge.py`, `decision.py`, `live_decision.py`, `bet_engine.py`,
+`analyzer.py`, `full_engine.py`, `market.py`, `cli/predict.py`,
+`ranking.py`, `value_scanner.py`, `backtest/historical/evaluator.py`,
+`scripts/live_scanner.py`, entre outros). Confirma-se que **existe
+efetivamente apenas uma implementação oficial**, `calculate_edge()` em
+`src/engine/edge.py` (secção 14), e que todos os módulos de produção já
+identificados na secção 14.5 continuam a reutilizá-la sem recalcular a
+fórmula localmente. O bug documentado em `src/engine/market.py` (§6.3/§14.4)
+**continua corrigido**: `analyze_market()` chama
+`calculate_edge(model_probability, odd)`, passando a odd e não a
+probabilidade implícita de mercado.
+
+### 17.2 Única divergência encontrada: `scripts/live_scanner.py`
+
+Este script standalone (não invocado por nenhum entry point de `main.py`;
+usado manualmente para scan ao vivo, ver `docs/AUDIT_BSD_401.md`)
+recalculava a mesma fórmula localmente em vez de reutilizar
+`calculate_edge`:
+
+```python
+implied = (1 / odd) * 100
+edge = round(probability - implied, 2)
+```
+
+Matematicamente equivalente a `calculate_edge(probability/100, odd) * 100`
+— não é um bug de valores incorretos, mas é exatamente o tipo de duplicação
+de fórmula que a secção 14 já tinha eliminado dos módulos de produção.
+**Corrigido**: o script passa a importar e chamar `calculate_edge`/
+`implied_probability` de `src/engine/edge.py`, com uma guarda prévia
+(`odd <= 1.0` ou `probability <= 0`) antes da chamada, no mesmo padrão
+defensivo já usado por `DecisionEngine.evaluate_bet`, `evaluate_live_market`
+e `bet_engine.evaluate_bet` (evita a exceção que `calculate_edge` agora
+lança para inputs inválidos — ver §14.3 — em vez de deixar o erro cair no
+`except Exception` genérico do script). Nenhum outro ficheiro precisou de
+alteração.
+
+### 17.3 Testes e impacto
+
+`python -m pytest tests/` (206 testes) continua totalmente verde,
+`python main.py predict` falha da mesma forma que na secção 15.6 (falta de
+credenciais de API neste ambiente — comportamento de baseline, sem novas
+exceções) e `python run_backtest.py --demo` produz o mesmo resumo numérico
+de sempre. Impacto esperado desta secção: nenhuma mudança de comportamento
+observável em produção (nenhum entry point de `main.py` importa
+`scripts/live_scanner.py`); o único efeito é a remoção de uma fórmula de
+Edge duplicada, mantendo `src/engine/edge.py::calculate_edge` como única
+fonte oficial em todo o repositório.
