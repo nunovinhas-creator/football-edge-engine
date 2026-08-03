@@ -13,6 +13,17 @@ from src.engine.ranking import create_ranking
 from src.report.printer import print_report
 
 
+# Mapa entre o nome de mercado usado por match.odds ("HOME"/"DRAW"/"AWAY")
+# e a chave devolvida por src/engine/value.py::estimate_pregame_probabilities()
+# ("home"/"draw"/"away"), que por sua vez vem do modelo Dixon-Coles já
+# existente (src/engine/dixon_coles.py). Ver docs/AUDIT_MATEMATICA.md.
+MARKET_TO_DIXON_COLES_KEY = {
+    "HOME": "home",
+    "DRAW": "draw",
+    "AWAY": "away"
+}
+
+
 def run_predict():
 
     collector = EventCollector()
@@ -49,10 +60,19 @@ def run_predict():
                 odd
             )
 
-            # match.probability vem em escala percentual (0-100), tal como
-            # devolvido por predict_probability(); calculate_edge/calculate_ev
-            # esperam a probabilidade do modelo em fração (0.0-1.0).
-            model_probability_fraction = match.probability / 100.0
+            # Probabilidade pré-jogo do modelo Dixon-Coles já existente
+            # (src/engine/dixon_coles.py, via src/engine/value.py), calculada
+            # por mercado (HOME/DRAW/AWAY) — em vez de reutilizar a mesma
+            # probabilidade heurística de H2H (match.probability) para os 3
+            # mercados, como acontecia antes desta integração. Fallback para
+            # a heurística de H2H apenas se, por algum motivo, o Dixon-Coles
+            # não tiver sido calculado para este jogo (nunca falha a pipeline).
+            dixon_coles_key = MARKET_TO_DIXON_COLES_KEY.get(market)
+
+            if match.dixon_coles_probabilities and dixon_coles_key in match.dixon_coles_probabilities:
+                model_probability_fraction = match.dixon_coles_probabilities[dixon_coles_key]
+            else:
+                model_probability_fraction = match.probability / 100.0
 
             # Edge oficial: prob_model - probabilidade implícita de mercado,
             # em pontos percentuais (mesma convenção usada por DecisionEngine
@@ -130,8 +150,11 @@ def run_predict():
                 "odd":
                 odd,
 
+                # Probabilidade efetivamente usada para calcular edge/ev acima
+                # (Dixon-Coles por mercado, com fallback para a heurística de
+                # H2H — ver comentário junto a model_probability_fraction).
                 "model_probability":
-                match.probability,
+                round(model_probability_fraction * 100, 2),
 
                 "market_probability":
                 market_probability,
