@@ -300,6 +300,17 @@ No `render_live_dashboard()` (`dashboard.py:40-46`), corre uma **segunda instân
 
 Ou seja: **nenhuma das duas simulações usa simultaneamente (a) o placar real e (b) um λ que reflita o estado do jogo.** Uma tem o placar certo e λ errado; a outra tem o λ (nominalmente) dinâmico mas o placar errado (sempre 0-0).
 
+### 4.3 Correção aplicada — Monte Carlo passa a consumir o λ dinâmico
+
+**Antes:** `render_live_dashboard()` (`dashboard.py`) instanciava um segundo `MonteCarloSimulator` e chamava `run_match_simulation()` com `home_lambda=1.6` e `away_lambda=1.1` fixos, ignorando por completo o resultado já calculado por `LivePipeline.evaluate()` (que ficava na variável `pipeline_sim`, nunca usada — ver §4.2 e achado nº2 do sumário executivo).
+
+**Agora:** existe uma única execução do Monte Carlo por avaliação, feita em `LivePipeline.evaluate()` (`src/engine/live_pipeline.py`). O dashboard deixou de instanciar `MonteCarloSimulator` e passou a consumir diretamente `analysis["simulation"]` — o resultado produzido com o λ_home dinâmico de `calculate_dynamic_lambda()`. Não foram alterados o algoritmo de simulação, o número de simulações, a distribuição usada (Poisson via `numpy.random.poisson`), o Decision Engine, o Kelly, o Expected Value, o Goal Engine ou qualquer componente de Machine Learning — apenas a origem dos valores de λ consumidos pela chamada já existente a `run_match_simulation()`.
+
+- **λ_home:** dinâmico, único ponto de cálculo em `LivePipeline.calculate_dynamic_lambda()` (inputs: `estimated_xg_10m` e `pressure`, produzidos por `LiveGoalEngine.predict_next_goal_probability()`).
+- **λ_away:** continua a não ter uma fonte dinâmica no sistema (não existe, atualmente, um sinal equivalente de pressão/xG específico da equipa visitante em `LiveMatchState`) — mantém-se o valor fixo que já era usado por `LivePipeline` antes desta alteração (`0.80`), agora nomeado como `FALLBACK_LAMBDA_AWAY` e documentado no código. Construir uma fonte dinâmica para λ_away ficaria fora do âmbito desta alteração (exigiria novos dados/lógica no Goal Engine).
+- **Fallback do λ_home:** se `calculate_dynamic_lambda()` receber dados ausentes ou não numéricos (ex.: `live_result` incompleto), devolve `FALLBACK_LAMBDA_HOME = 1.6` — o mesmo valor fixo que o dashboard usava incondicionalmente antes desta correção — em vez de propagar uma excepção. A simulação nunca falha por falta de dados ao vivo.
+- **Testes:** `tests/test_live_pipeline.py` (λ dinâmico reflete os inputs ao vivo; fallback ativado com dados ausentes/inválidos; `evaluate()` nunca levanta excepção; forma do resultado da simulação inalterada) e `tests/test_dashboard_montecarlo.py` (o dashboard já não corre uma segunda simulação; os valores mostrados/usados pelo Decision Engine são exatamente os de `analysis["simulation"]`).
+
 ---
 
 ## 5. Goal Engine
