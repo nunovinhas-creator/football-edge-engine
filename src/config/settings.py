@@ -10,4 +10,6 @@ API_KEY = (
     or os.getenv("API_KEY")
 )
 
-BASE_URL = "https://sports.bzzoiro.com/api/v2"
+BSD_ROOT_URL = "https://sports.bzzoiro.com"
+
+BASE_URL = f"{BSD_ROOT_URL}/api/v2"
