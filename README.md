@@ -220,6 +220,14 @@ python main.py dashboard   # Launch the Streamlit live dashboard
 
 ---
 
+# Automation (GitHub Actions)
+
+`.github/workflows/daily_engine_analysis.yml` runs `python main.py predict` on a daily schedule (08:00 UTC) plus `workflow_dispatch` for manual runs. It needs the same env vars as local runs — one of the BSD API key aliases from the Environment section above, plus `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` — provided as repository secrets.
+
+The workflow invokes the CLI with a positional subcommand (`python main.py predict`), matching `main.py`'s argparse subparsers. It does **not** use a `--mode` flag — that syntax belonged to a previous, pre-refactor version of `main.py` and will fail with `error: unrecognized arguments` (or, on the older CLI, silently run the wrong pipeline) if reintroduced. `.github/workflows/live_logger.yml` follows the same convention for its own subcommand.
+
+---
+
 # Roadmap
 
 Remaining work
