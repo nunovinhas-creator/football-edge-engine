@@ -1,6 +1,5 @@
-import os
-
 from src.api.http_retry import get_with_retry
+from src.config.settings import API_KEY, BSD_ROOT_URL
 from src.models.live_state import LiveMatchState
 from src.live.providers.stats_provider import StatsProvider
 from src.live.providers.incidents_provider import IncidentsProvider
@@ -9,12 +8,12 @@ from src.live.providers.bsd_feature_adapter import BSDFeatureAdapter
 
 class APIMatchProvider:
 
-    BASE_URL = "https://sports.bzzoiro.com"
+    BASE_URL = BSD_ROOT_URL
 
 
     def __init__(self):
 
-        self.api_key = os.getenv("BSD_API_KEY")
+        self.api_key = API_KEY
 
         self.stats_provider = StatsProvider()
 

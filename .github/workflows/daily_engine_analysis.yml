@@ -35,4 +35,4 @@ jobs:
           BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
           API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
         run: |
-          python main.py --mode predict
+          python main.py predict

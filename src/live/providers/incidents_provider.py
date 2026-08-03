@@ -1,14 +1,13 @@
-import os
-
 from src.api.http_retry import get_with_retry
+from src.config.settings import API_KEY, BSD_ROOT_URL
 
 
 class IncidentsProvider:
 
-    BASE_URL = "https://sports.bzzoiro.com"
+    BASE_URL = BSD_ROOT_URL
 
     def __init__(self):
-        self.api_key = os.getenv("BSD_API_KEY")
+        self.api_key = API_KEY
 
     def get_incidents(self, event_id):
 

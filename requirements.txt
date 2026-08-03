@@ -3,10 +3,10 @@ python-dotenv
 pandas
 numpy
 scikit-learn
+xgboost
 lightgbm
 imbalanced-learn
 matplotlib
-streamlit
 streamlit
 plotly
 rich
