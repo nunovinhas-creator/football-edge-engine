@@ -1,11 +1,11 @@
 from src.api.http_retry import get_with_retry
-from src.config.settings import API_KEY, BASE_URL
+from src.config.settings import BASE_URL, require_api_key
 
 
 class BzzoiroClient:
 
     def __init__(self):
-        self.api_key = API_KEY.rstrip("/")
+        self.api_key = require_api_key().rstrip("/")
         self.base_url = BASE_URL.rstrip("/")
 
     def get(self, endpoint: str):
