@@ -14,6 +14,7 @@ Envia `Authorization: Token <key>`, o esquema `tokenAuth` definido em
 local antes de cada pedido (ver `rate_limiter.py`).
 """
 
+import re
 from typing import Any, Dict, Optional
 
 from src.api.http_retry import get_with_retry
@@ -21,6 +22,43 @@ from src.config.settings import BASE_URL, require_api_key
 from src.historical_dataset.rate_limiter import RateLimiter
 
 DEFAULT_TIMEOUT_SECONDS = 30
+
+# --- INÍCIO logging temporário de diagnóstico -------------------------------
+# Auditoria exclusiva de GET /api/v2/leagues/{league_id}/seasons/ (ver PR).
+# Não altera nenhum valor devolvido, nem a lógica de paginação/filtros —
+# apenas imprime o que já foi obtido. Remover após o diagnóstico.
+_SEASONS_ENDPOINT_RE = re.compile(r"^leagues/\d+/seasons/$")
+
+
+def _diag_log_seasons_response(response) -> None:
+    print(f"[DIAG seasons] URL completa: {response.url}")
+    print(f"[DIAG seasons] Status HTTP: {response.status_code}")
+    print(f"[DIAG seasons] Headers da resposta: {dict(response.headers)}")
+    request_headers = dict(getattr(response.request, "headers", {}) or {})
+    if "Authorization" in request_headers:
+        request_headers["Authorization"] = "***REDACTED***"
+    print(f"[DIAG seasons] Headers do pedido (Authorization redigido): {request_headers}")
+    body_preview = response.text[:2000] if response.content else "(corpo vazio)"
+    print(f"[DIAG seasons] JSON bruto (primeiros 2000 chars): {body_preview}")
+
+
+def _diag_log_seasons_payload(data: Any) -> None:
+    print(f"[DIAG seasons] Tipo do payload: {type(data).__name__}")
+    if isinstance(data, dict):
+        print(f"[DIAG seasons] Chaves do dict: {list(data.keys())}")
+        list_key = next((k for k, v in data.items() if isinstance(v, list)), None)
+        if list_key is not None:
+            print(
+                f"[DIAG seasons] Lista de épocas encontrada na chave '{list_key}' "
+                f"({len(data[list_key])} itens)"
+            )
+        else:
+            print("[DIAG seasons] Nenhuma chave do dict contém uma lista.")
+    elif isinstance(data, list):
+        print(f"[DIAG seasons] Lista direta (array JSON simples) com {len(data)} itens")
+    else:
+        print(f"[DIAG seasons] Payload não é list nem dict: {data!r}")
+# --- FIM logging temporário de diagnóstico ----------------------------------
 
 
 class BSDAPIError(Exception):
@@ -77,10 +115,19 @@ class BSDHistoricalClient:
         )
         self.request_count += 1
 
+        _diag_seasons = bool(_SEASONS_ENDPOINT_RE.match(endpoint))  # TEMPORÁRIO — ver PR
+        if _diag_seasons:
+            _diag_log_seasons_response(response)
+
         if response.status_code >= 400:
             raise BSDAPIError(response.status_code, url, response.text)
 
         if not response.content:
             return None
 
-        return response.json()
+        data = response.json()
+
+        if _diag_seasons:  # TEMPORÁRIO — ver PR
+            _diag_log_seasons_payload(data)
+
+        return data
