@@ -65,11 +65,15 @@ decisão), ou dados que decorrem diretamente do resultado real do jogo:
   resultado final do jogo (golos casa/fora); é apenas uma tabela de
   mapeamento sobre um resultado já ocorrido, não uma previsão.
 
-O projeto ainda não tem uma integração própria com uma fonte de jogos
-históricos com odds e resultados (as fontes existentes — `src.api`,
+Este módulo continua a aceitar apenas **CSV**/DataFrame/lista de dicts
+fornecidos pelo utilizador (as fontes já existentes — `src.api`,
 `src.collector` — servem eventos futuros/ao vivo, não um arquivo
-histórico); por isso a via suportada é **CSV**, com o seguinte esquema
-mínimo:
+histórico). Para construir esse CSV a partir da BSD API, ver
+`src.historical_dataset` (Historical Dataset Builder,
+`docs/07_historical_dataset_builder.md`) e a ponte
+`src.historical_dataset.backtest_bridge.to_backtest_frame`, que converte
+o seu dataset normalizado para o esquema mínimo abaixo. Esquema mínimo
+esperado por `load_historical_dataset`:
 
 | Coluna (EN)    | Alias (PT)                        | Obrigatória | Descrição                                             |
 |-----------------|-------------------------------------|:-----------:|---------------------------------------------------------|

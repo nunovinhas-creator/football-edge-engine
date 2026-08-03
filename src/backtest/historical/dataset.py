@@ -21,10 +21,13 @@ diretamente dos dados brutos (não de uma previsão nova):
        mapeamento mercado -> resultado (`infer_market_result`), que é pura
        aritmética sobre o resultado já ocorrido — não uma previsão.
 
-O projeto não tem (ainda) uma integração própria com uma fonte de jogos
-históricos com odds e resultados; por isso a via suportada é CSV (aceita
-também DataFrame/lista de dicts para quem já tiver os dados carregados de
-outra forma).
+A via suportada continua a ser CSV/DataFrame/lista de dicts (este módulo
+não foi alterado). Para construir esses dados a partir da BSD API em vez
+de os fornecer manualmente, ver `src.historical_dataset` — o Historical
+Dataset Builder, que produz um dataset histórico normalizado e
+disponibiliza `src.historical_dataset.backtest_bridge.to_backtest_frame`
+para o converter para o formato aceite aqui (ver
+`docs/07_historical_dataset_builder.md`).
 """
 
 import re

@@ -41,6 +41,7 @@ Implemented
 - Streamlit Dashboard
 - Telegram Integration
 - GitHub Actions
+- Historical Dataset Builder
 
 ---
 
@@ -187,6 +188,22 @@ Integrated endpoints
 
 ---
 
+# Historical Dataset Builder
+
+`src/historical_dataset/` walks the BSD API end-to-end — competitions,
+seasons, finished matches, odds and stats — and produces a single
+normalized historical dataset, exported to CSV, SQLite and (when
+supported) Parquet. It does not compute or alter any model (Dixon-Coles,
+Monte Carlo, Kelly, Edge, EV, Goal Engine, Machine Learning); it only
+extracts and normalizes raw data. See `docs/07_historical_dataset_builder.md`
+for the full architecture and limitations.
+
+```
+python build_historical_dataset.py --output-dir data/historical
+```
+
+---
+
 # Installation
 
 python -m venv .venv
@@ -234,7 +251,6 @@ Remaining work
 
 - Real Pressure Model
 - Automatic Decision Engine
-- Historical Database
 - Backtesting Improvements
 - Portfolio Manager
 
