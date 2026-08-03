@@ -1,5 +1,6 @@
 import os
-import requests
+
+from src.api.http_retry import get_with_retry
 
 
 class StatsProvider:
@@ -24,7 +25,7 @@ class StatsProvider:
 
     def get_event_stats(self, event_id):
 
-        r = requests.get(
+        r = get_with_retry(
             f"{self.BASE_URL}/api/v2/events/{event_id}/stats/",
             headers=self.headers(),
             timeout=10

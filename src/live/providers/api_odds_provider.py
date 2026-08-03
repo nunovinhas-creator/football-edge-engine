@@ -1,5 +1,6 @@
 import os
-import requests
+
+from src.api.http_retry import get_with_retry
 
 
 class APIOddsProvider:
@@ -35,7 +36,7 @@ class APIOddsProvider:
         )
 
 
-        response = requests.get(
+        response = get_with_retry(
             url,
             headers=self.headers(),
             timeout=10

@@ -1,5 +1,6 @@
 import os
-import requests
+
+from src.api.http_retry import get_with_retry
 
 
 class IncidentsProvider:
@@ -11,7 +12,7 @@ class IncidentsProvider:
 
     def get_incidents(self, event_id):
 
-        r = requests.get(
+        r = get_with_retry(
             f"{self.BASE_URL}/api/v2/events/{event_id}/incidents/",
             headers={
                 "Authorization": f"Token {self.api_key}"
