@@ -17,7 +17,7 @@ class BzzoiroClient:
         response = get_with_retry(
             url,
             headers={
-                "X-API-Key": self.api_key,
+                "Authorization": f"Token {self.api_key}",
                 "Accept": "application/json"
             },
             timeout=30,

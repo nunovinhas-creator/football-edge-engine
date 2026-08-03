@@ -4,6 +4,11 @@
 **Âmbito:** Auditoria exaustiva da integração BSD Sports API e diagnóstico do erro 401 em `daily_engine_analysis.yml`.
 **Regra seguida:** Nenhum algoritmo, modelo estatístico ou lógica de negócio foi alterado. Esta auditoria é apenas diagnóstica.
 
+> **Estado: RESOLVIDO.** `BzzoiroClient` (`src/api/client.py`) foi corrigido para enviar
+> `Authorization: Token <API_KEY>` em vez de `X-API-Key`, alinhando com o esquema `tokenAuth`
+> da especificação (`schema.yaml`). Ver PR de correção subsequente a esta auditoria.
+> Os achados abaixo mantêm-se como registo histórico do diagnóstico.
+
 ---
 
 ## 1. Mapa completo da integração BSD
