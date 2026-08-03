@@ -240,7 +240,19 @@ class TestEventCollectorAttachesDixonColesProbabilities(unittest.TestCase):
         # golos esperados (lambda_home/mu_away) passam a ficar em xg_home/xg_away
         self.assertIsNotNone(match.xg_home)
         self.assertIsNotNone(match.xg_away)
-        self.assertAlmostEqual(match.xg_home + match.xg_away, 3.0, places=2)
+
+        # A partir de src/engine/lambda_estimator.py (estimador por omissão
+        # da pipeline desde a introdução do estimador estatisticamente mais
+        # forte — ver docs/05_lambda_estimator.md), a soma xg_home+xg_away
+        # já não é necessariamente igual a avg_total_goals: sem
+        # "home_goals"/"away_goals"/"recent_matches" no H2H, a repartição
+        # inferida (Nível C, delegada a pregame_lambda.py) é encolhida
+        # (shrinkage) para o prior de liga (2.5) proporcionalmente a
+        # total_matches*0.5=4 "pseudo-jogos" contra SHRINKAGE_K=4 do prior —
+        # ou seja, prior e amostra pesam o mesmo aqui. Valores exatos
+        # cobertos em detalhe por tests/test_lambda_estimator.py.
+        self.assertAlmostEqual(match.xg_home, 1.75, places=2)
+        self.assertAlmostEqual(match.xg_away, 1.0, places=2)
 
     def test_match_gets_dixon_coles_probabilities_even_without_h2h(self):
         from src.collector.client import EventCollector

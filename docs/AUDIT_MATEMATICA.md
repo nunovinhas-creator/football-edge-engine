@@ -843,3 +843,96 @@ Recapitulando §3 (nada mudou nos ficheiros abaixo — apenas deixaram de ser c�
 - **Golos esperados deixam de ser sempre `None`**: `xg_home`/`xg_away` no relatório de cada jogo (`Match.to_dict()`) passam a refletir os λ usados pelo Dixon-Coles, em vez de ficarem vazios.
 - **Qualidade da probabilidade em si**: o Dixon-Coles em produção continua sujeito à mesma limitação já registada em §3.4/§12.2 — os λ vêm de um adaptador simples baseado em H2H (`avg_total_goals` + tilt de win-rate), não de uma estimação de ataque/defesa por MLE com decaimento temporal. A "meia fórmula" que faltava ao Dixon-Coles (§3.2) continua a faltar; o que mudou é que a "meia fórmula" que já existia (a distribuição de probabilidade dado λ) finalmente processa números reais em produção, em vez de nunca ser chamada. Não se espera, desta integração isolada, uma melhoria de calibração validada estatisticamente — isso exigiria o trabalho descrito em §12.2/§13 (fora do âmbito pedido: "não implementar melhorias ao próprio modelo").
 - **Sem impacto no `main.py live`, no Monte Carlo, no Kelly ao vivo, no Goal Engine, nem no `run_backtest.py`** — nenhum destes caminhos foi tocado; confirmado por execução de `python main.py predict` (falha da mesma forma que antes, por falta de credenciais de API neste ambiente — comportamento idêntico ao baseline, sem novas exceções) e `python run_backtest.py --demo` (output numérico idêntico ao baseline) após as alterações.
+
+---
+
+## 16. Estimador de lambda estatisticamente mais forte (§3.2/§12.2 endereçados parcialmente)
+
+**Data:** 2026-08-03. Âmbito: substituir o adaptador heurístico de
+`lambda_home`/`mu_away` (§15.2) por um estimador que usa mais da
+granularidade já devolvida pela API em `head_to_head`, com encolhimento
+estatístico (shrinkage) para amostras pequenas. **Nenhuma fórmula do
+Dixon-Coles (`tau`, `dixon_coles_simulate_match`, `calculate_fractional_kelly`),
+do Monte Carlo, do Kelly ou do Goal Engine foi alterada** — mesma disciplina
+de âmbito da secção 15. Documentação completa (metodologia, fórmulas,
+assunções, limitações, validação): `docs/05_lambda_estimator.md`.
+
+### 16.1 Porque este trabalho era necessário
+
+A secção 3.2 já tinha identificado que `dixon_coles_simulate_match()` nunca
+calculou λ a partir de dados — recebe-o sempre de fora. A secção 15
+resolveu a metade "ligar o modelo à produção", usando o adaptador mais
+simples possível (`pregame_lambda.py`, repartição de `avg_total_goals` por
+uma partilha fixa + tilt de win-rate). A secção 12.2 já registava esta
+simplificação como a limitação mais importante face a boas práticas
+quantitativas: "ausência de estimação de parâmetros a partir de dados
+históricos... o próprio repositório já tem uma função `decay.py::apply_exponential_decay`
+pronta para isto, mas não está ligada ao Dixon-Coles". Esta secção liga
+essa função, e usa dois campos de `head_to_head` que a API já devolve
+(confirmado em `schema.yaml`) mas que nenhum código no repositório lia:
+`home_goals`/`away_goals` (golos agregados por equipa no H2H) e
+`recent_matches` (confrontos diretos individuais).
+
+### 16.2 O que foi acrescentado — novo módulo, não reescrita do existente
+
+- **`src/engine/lambda_estimator.py`** (novo): `estimate_lambda(h2h)` — mesmo
+  contrato de `pregame_lambda.py::estimate_pregame_lambdas(h2h)` (nunca
+  lança exceção, nunca devolve ≤0), mas escolhe o melhor nível de
+  informação disponível (jogos recentes ponderados por recência > golos
+  agregados por equipa > `avg_total_goals` inferido > prior de liga) e
+  aplica encolhimento estatístico (`empirical-Bayes shrinkage`) proporcional
+  à dimensão da amostra disponível. Delega explicitamente ao Nível C/D o
+  adaptador já existente (`estimate_pregame_lambdas`), em vez de duplicar a
+  lógica de tilt de win-rate/vantagem de casa uma segunda vez.
+- **`src/engine/pregame_lambda.py`** — **ficheiro não alterado**. Continua a
+  ser usado (a) como bloco de construção do Nível C/D acima, e (b) como
+  fallback defensivo em `src/collector/client.py` caso o novo estimador
+  levante alguma exceção inesperada. Todos os testes de §15.4 continuam a
+  passar sem alteração.
+- **`src/collector/client.py::EventCollector.get_matches()`**: passa a
+  chamar `estimate_lambda(h2h)` (com `try/except` para
+  `estimate_pregame_lambdas(h2h)` como rede de segurança) em vez de chamar
+  diretamente o heurístico antigo. Nenhum outro consumidor a jusante
+  (`Match`, `src/cli/predict.py`, `src/engine/value.py`) foi alterado — o
+  contrato (dois floats > 0) manteve-se idêntico.
+
+### 16.3 Validação
+
+`scripts/benchmark_lambda_estimator.py` compara os dois estimadores em dois
+planos: (1) cenários determinísticos lado-a-lado, e (2) uma simulação de
+recuperação sintética — dados inteiramente sintéticos com verdade
+fundamental conhecida por construção, **rotulada explicitamente como
+validação da mecânica estatística, não como alegação de desempenho
+preditivo real**. Resultado agregado dessa simulação (400 trials por
+combinação cenário/tamanho de amostra, seed=42): MSE(λ) 0.655→0.331, Brier
+0.2219→0.2203, Log Loss 0.6351→0.6312 (antigo→novo). A melhoria concentra-se
+em amostras pequenas (1-5 jogos de H2H — o caso mais comum na prática); foi
+também encontrada e documentada uma limitação genuína do novo estimador em
+amostras grandes (o Nível A não continua a convergir indefinidamente, por
+desenho — ver `docs/05_lambda_estimator.md` §3.3/§7.1).
+
+**Backtest real (Brier/Log Loss/Calibração/ROI sobre jogos e odds reais):
+não executado.** Confirma-se aqui a mesma conclusão já registada em §12.2 e
+§15.6 — o repositório não tem, no momento desta alteração, um dataset que
+ligue snapshots de `head_to_head` (tal como estariam disponíveis antes de
+cada jogo, sem fuga de informação do resultado) a resultados finais e odds
+reais. `examples/backtest/sample_real_games.csv` tem 9 linhas sem nenhum
+par de equipas repetido e sem `head_to_head`; `data/live_history.db` só tem
+snapshots ao vivo (§1.2, §8) e não está ligado a resultados finais de forma
+utilizável aqui. Não há credenciais de API configuradas neste ambiente
+(`src/config/settings.py::require_api_key()` confirma todas as variáveis de
+ambiente suportadas como ausentes), pelo que também não foi possível puxar
+um dataset novo da API ao vivo. O requisito exato de dados para fazer esta
+validação no futuro está documentado em `docs/05_lambda_estimator.md`,
+secção 7.2.
+
+### 16.4 O que continua por fazer
+
+Tal como a secção 15 não implementou a estimação de ataque/defesa por MLE
+(§3.2), esta secção também não o faz — usa mais da granularidade do H2H já
+disponível, não constrói uma nova fonte de dados de liga inteira. Continua
+válida a recomendação nº1 do §13 nesse sentido específico, e fica registado
+como novo requisito concreto (não estava explícito antes desta secção): uma
+fonte de dados de golos por equipa ao longo de uma temporada completa (não
+apenas confrontos diretos entre duas equipas específicas), hoje ausente de
+qualquer caminho de recolha de dados do repositório.
