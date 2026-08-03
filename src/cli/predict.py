@@ -42,22 +42,40 @@ def run_predict():
             ]:
                 continue
 
+            if odd is None or odd <= 1.0:
+                continue
 
             market_probability = implied_probability(
                 odd
             )
 
+            # match.probability vem em escala percentual (0-100), tal como
+            # devolvido por predict_probability(); calculate_edge/calculate_ev
+            # esperam a probabilidade do modelo em fração (0.0-1.0).
+            model_probability_fraction = match.probability / 100.0
 
-            edge = calculate_edge(
-                match.probability,
-                market_probability
+            # Edge oficial: prob_model - probabilidade implícita de mercado,
+            # em pontos percentuais (mesma convenção usada por DecisionEngine
+            # e evaluate_live_market). Bug corrigido: antes chamava-se
+            # calculate_edge(match.probability, market_probability), passando
+            # uma probabilidade (0-1) no lugar da odd esperada pela função.
+            edge = round(
+                calculate_edge(
+                    model_probability_fraction,
+                    odd
+                ) * 100,
+                2
             )
 
-
-            ev = calculate_ev(
-                match.probability,
-                odd
+            ev = round(
+                calculate_ev(
+                    model_probability_fraction,
+                    odd
+                ) * 100,
+                2
             )
+
+            market_probability = round(market_probability * 100, 2)
 
 
             decision = make_decision(
