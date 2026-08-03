@@ -1,6 +1,6 @@
 import os
-import requests
 
+from src.api.http_retry import get_with_retry
 from src.models.live_state import LiveMatchState
 from src.live.providers.stats_provider import StatsProvider
 from src.live.providers.incidents_provider import IncidentsProvider
@@ -32,7 +32,7 @@ class APIMatchProvider:
 
     def get_live_matches(self):
 
-        r = requests.get(
+        r = get_with_retry(
             f"{self.BASE_URL}/api/v2/events/live/",
             headers=self.headers(),
             timeout=10
@@ -45,7 +45,7 @@ class APIMatchProvider:
 
     def get_live_match(self, match_id):
 
-        event = requests.get(
+        event = get_with_retry(
             f"{self.BASE_URL}/api/v2/events/{match_id}/?full=true",
             headers=self.headers(),
             timeout=10

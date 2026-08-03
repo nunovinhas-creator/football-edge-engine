@@ -1,6 +1,6 @@
 import os
-import json
-import urllib.request
+
+from src.api.http_retry import post_with_retry
 
 def send_telegram_alert(message: str) -> bool:
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -20,14 +20,11 @@ def send_telegram_alert(message: str) -> bool:
         "parse_mode": "Markdown"
     }
 
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
-
     try:
-        with urllib.request.urlopen(req) as response:
-            if response.status == 200:
-                print("📲 Alerta enviado para o Telegram com sucesso!")
-                return True
+        response = post_with_retry(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            print("📲 Alerta enviado para o Telegram com sucesso!")
+            return True
     except Exception as e:
         print(f"❌ Erro ao enviar mensagem para o Telegram: {e}")
         return False

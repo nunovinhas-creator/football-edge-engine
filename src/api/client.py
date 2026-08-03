@@ -1,4 +1,4 @@
-import requests
+from src.api.http_retry import get_with_retry
 from src.config.settings import API_KEY, BASE_URL
 
 
@@ -14,7 +14,7 @@ class BzzoiroClient:
 
         url = f"{self.base_url}/{endpoint}"
 
-        response = requests.get(
+        response = get_with_retry(
             url,
             headers={
                 "X-API-Key": self.api_key,
