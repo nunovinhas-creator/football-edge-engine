@@ -13,7 +13,7 @@ from src.engine.ranking import create_ranking
 from src.report.printer import print_report
 
 
-def run():
+def run_predict():
 
     collector = EventCollector()
 
@@ -180,9 +180,3 @@ def run():
 
     for bet in ranking["value_bets"]:
         print_report(bet)
-
-
-
-if __name__ == "__main__":
-    run()
-

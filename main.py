@@ -1,25 +1,41 @@
-from src.engine.live_pipeline import LivePipeline
-from src.report.dashboard import render_live_dashboard
+import argparse
+
+from src.cli.live import run_live
+from src.cli.predict import run_predict
+from src.cli.train import run_train
+from src.cli.dashboard import run_dashboard
+
+
+def build_parser():
+
+    parser = argparse.ArgumentParser(
+        prog="main.py",
+        description="Football Edge Engine"
+    )
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    subparsers.add_parser("live", help="Run the live match analysis dashboard")
+    subparsers.add_parser("predict", help="Scan upcoming matches for value bets")
+    subparsers.add_parser("train", help="Train the live goal probability model")
+    subparsers.add_parser("dashboard", help="Launch the Streamlit live dashboard")
+
+    return parser
 
 
 def main():
 
-    MATCH_ID = 219488
+    parser = build_parser()
+    args = parser.parse_args()
 
-    pipeline = LivePipeline()
-
-    analysis = pipeline.evaluate(MATCH_ID)
-
-    match_state = pipeline.match_provider.get_live_match(MATCH_ID)
-
-    render_live_dashboard(
-        home_team="Home",
-        away_team="Away",
-        score="0-0",
-        match_state=match_state,
-        bookie_over15_odd=analysis["odds"]["odds"]["over_15_goals"],
-        analysis=analysis
-    )
+    if args.command == "live":
+        run_live()
+    elif args.command == "predict":
+        run_predict()
+    elif args.command == "train":
+        run_train()
+    elif args.command == "dashboard":
+        run_dashboard()
 
 
 if __name__ == "__main__":

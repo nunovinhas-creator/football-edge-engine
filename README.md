@@ -102,6 +102,8 @@ Logger
 
 src/
 
+cli/
+
 engine/
 
 live/
@@ -203,11 +205,16 @@ BSD_API_KEY=YOUR_KEY
 
 # Run
 
-python main.py
+A single entrypoint (`main.py`) dispatches to every mode via argparse:
 
-or
+```
+python main.py live        # Live match analysis dashboard (console)
+python main.py predict     # Scan upcoming matches for value bets
+python main.py train       # Train the live goal probability model
+python main.py dashboard   # Launch the Streamlit live dashboard
+```
 
-streamlit run app.py
+`dashboard` launches the Streamlit app (`scripts/app.py`) under the hood, equivalent to running `streamlit run scripts/app.py` directly.
 
 ---
 
@@ -226,4 +233,3 @@ Remaining work
 # License
 
 MIT
->>>>>>> feature/live-core-v4
