@@ -13,7 +13,7 @@ import shutil
 import tempfile
 import unittest
 
-from src.historical_dataset.builder import HistoricalDatasetBuilder
+from src.historical_dataset.builder import HistoricalDatasetBuilder, _extract_seasons
 from src.historical_dataset.checkpoint import Checkpoint
 from src.historical_dataset.client import BSDAPIError
 
@@ -280,6 +280,105 @@ class TestHistoricalDatasetBuilderCheckpointResume(unittest.TestCase):
 
         self.assertEqual(len(second_run), 1)
         self.assertNotEqual(second_run[0]["event_id"], processed_id)
+
+
+class TestExtractSeasons(unittest.TestCase):
+    """
+    Testes de `builder._extract_seasons` — parser de
+    `GET /api/v2/leagues/{league_id}/seasons/`.
+
+    Cobre a forma real observada em produção (envelope `{"seasons": [...]}`,
+    com `league_id`/`count` adicionais), a forma genérica de compatibilidade
+    `{"results": [...]}`, um array JSON simples, e os casos degenerados
+    (lista vazia, payload ausente/inesperado).
+    """
+
+    def test_seasons_key_returns_all_elements(self):
+        payload = {
+            "league_id": 8,
+            "count": 18,
+            "seasons": [{"id": 280, "year": 2025}, {"id": 279, "year": 2024}],
+        }
+        self.assertEqual(_extract_seasons(payload), [{"id": 280, "year": 2025}, {"id": 279, "year": 2024}])
+
+    def test_seasons_key_with_many_elements_returns_all(self):
+        seasons = [{"id": i, "year": 2000 + i} for i in range(18)]
+        payload = {"league_id": 8, "count": 18, "seasons": seasons}
+        result = _extract_seasons(payload)
+        self.assertEqual(len(result), 18)
+        self.assertEqual(result, seasons)
+
+    def test_empty_seasons_list_returns_empty_list(self):
+        payload = {"league_id": 8, "count": 0, "seasons": []}
+        self.assertEqual(_extract_seasons(payload), [])
+
+    def test_results_key_still_supported_for_backward_compatibility(self):
+        payload = {"results": [{"id": 1, "year": 2020}]}
+        self.assertEqual(_extract_seasons(payload), [{"id": 1, "year": 2020}])
+
+    def test_seasons_key_takes_precedence_over_results_when_both_present(self):
+        payload = {"seasons": [{"id": 1}], "results": [{"id": 2}]}
+        self.assertEqual(_extract_seasons(payload), [{"id": 1}])
+
+    def test_plain_list_returned_as_is(self):
+        payload = [{"id": 1, "year": 2020}, {"id": 2, "year": 2021}]
+        self.assertEqual(_extract_seasons(payload), payload)
+
+    def test_empty_plain_list_returns_empty_list(self):
+        self.assertEqual(_extract_seasons([]), [])
+
+    def test_none_payload_returns_empty_list(self):
+        self.assertEqual(_extract_seasons(None), [])
+
+    def test_dict_without_seasons_or_results_returns_empty_list(self):
+        self.assertEqual(_extract_seasons({"league_id": 8, "count": 0}), [])
+
+    def test_unexpected_type_returns_empty_list(self):
+        self.assertEqual(_extract_seasons("not a payload"), [])
+
+
+class TestIterSeasonsParsing(unittest.TestCase):
+    """
+    Testes de integração leves de `HistoricalDatasetBuilder.iter_seasons`
+    com um cliente falso que devolve o payload bruto (dict/list) tal como a
+    BSD API o devolveria — ao contrário de `FakeHistoricalClient`
+    (usado no resto deste ficheiro), que já devolve listas pré-extraídas.
+    """
+
+    class _RawPayloadClient:
+        def __init__(self, payload):
+            self.payload = payload
+            self.calls = []
+
+        def get(self, endpoint, params=None):
+            self.calls.append(endpoint)
+            return self.payload
+
+    def test_real_seasons_envelope_is_parsed(self):
+        payload = {
+            "league_id": 8,
+            "count": 18,
+            "seasons": [{"id": 280, "year": 2025, "name": "2025/2026", "is_current": True}],
+        }
+        client = self._RawPayloadClient(payload)
+        builder = HistoricalDatasetBuilder(client=client)
+
+        seasons = builder.iter_seasons(8)
+
+        self.assertEqual(seasons, [{"id": 280, "year": 2025, "name": "2025/2026", "is_current": True}])
+        self.assertEqual(client.calls, ["leagues/8/seasons/"])
+
+    def test_empty_seasons_envelope_returns_empty_list(self):
+        client = self._RawPayloadClient({"league_id": 8, "count": 0, "seasons": []})
+        builder = HistoricalDatasetBuilder(client=client)
+
+        self.assertEqual(builder.iter_seasons(8), [])
+
+    def test_generic_results_envelope_still_supported(self):
+        client = self._RawPayloadClient({"results": [{"id": 5, "year": 2019}]})
+        builder = HistoricalDatasetBuilder(client=client)
+
+        self.assertEqual(builder.iter_seasons(38), [{"id": 5, "year": 2019}])
 
 
 if __name__ == "__main__":
