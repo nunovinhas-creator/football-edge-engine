@@ -17,7 +17,7 @@ from src.historical_dataset.checkpoint import NullCheckpoint
 from src.historical_dataset.client import BSDAPIError, BSDHistoricalClient
 from src.historical_dataset.dedup import Deduplicator
 from src.historical_dataset.normalizer import normalize_event
-from src.historical_dataset.paginator import DEFAULT_PAGE_SIZE, extract_items, iter_endpoint
+from src.historical_dataset.paginator import DEFAULT_PAGE_SIZE, iter_endpoint
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +26,38 @@ LeagueLike = Union[int, Dict[str, Any]]
 
 def _default_on_error(stage: str, event_id: Optional[int], exc: Exception) -> None:
     logger.warning("Falha ao obter %s do evento %s: %s", stage, event_id, exc)
+
+
+def _extract_seasons(payload: Any) -> list:
+    """
+    Extrai a lista de épocas da resposta de `/api/v2/leagues/{id}/seasons/`.
+
+    `schema.yaml` marca este endpoint como "No response body" (forma não
+    documentada). Na prática, a API devolve um envelope próprio deste
+    endpoint — `{"league_id": ..., "count": ..., "seasons": [...]}` —,
+    distinto do envelope genérico de paginação `{"results": [...]}` usado
+    por `paginator.extract_items` para `/leagues/` e `/events/` (que não é
+    tocado por esta função). Aceita, por ordem de preferência:
+
+    - array JSON simples (`[...]`);
+    - `{"seasons": [...]}` (forma real observada nos logs de produção);
+    - `{"results": [...]}` (compatibilidade com o envelope genérico, caso
+      este endpoint alguma vez responda nessa forma).
+
+    Qualquer outra forma (payload `None`, dict sem nenhuma destas chaves,
+    ou tipo inesperado) devolve lista vazia em vez de falhar.
+    """
+    if payload is None:
+        return []
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        for key in ("seasons", "results"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return value
+        return []
+    return []
 
 
 class HistoricalDatasetBuilder:
@@ -71,10 +103,7 @@ class HistoricalDatasetBuilder:
     def iter_seasons(self, league_id: int) -> list:
         """Devolve todas as épocas de uma liga (`/api/v2/leagues/{id}/seasons/`)."""
         payload = self.client.get(f"leagues/{league_id}/seasons/")
-        seasons = extract_items(payload) if isinstance(payload, dict) else (payload or [])
-        # TEMPORÁRIO — logging de diagnóstico, ver PR. Não altera o valor devolvido.
-        print(f"[DIAG seasons] iter_seasons(league_id={league_id}): parser encontrou {len(seasons)} época(s)")
-        return seasons
+        return _extract_seasons(payload)
 
     def iter_finished_events(
         self,
@@ -148,21 +177,11 @@ class HistoricalDatasetBuilder:
             league_id = league_dict["id"]
             self._progress("competition_start", {"league_id": league_id, "league_name": league_dict.get("name")})
 
-            seasons_for_league = self.iter_seasons(league_id)
-            matched_any_season = False  # TEMPORÁRIO — diagnóstico, ver PR
-
-            for season in seasons_for_league:
+            for season in self.iter_seasons(league_id):
                 season_id = season.get("id") if isinstance(season, dict) else season
 
                 if season_id_filter is not None and season_id not in season_id_filter:
-                    # TEMPORÁRIO — logging de diagnóstico, ver PR. Não altera o filtro.
-                    print(
-                        f"[DIAG seasons] league_id={league_id}: época id={season_id!r} não está em "
-                        f"season_id_filter={season_id_filter!r} -> continue (sem pedido a /events/)"
-                    )
                     continue
-
-                matched_any_season = True  # TEMPORÁRIO — diagnóstico, ver PR
 
                 if self.checkpoint.is_season_done(league_id, season_id):
                     continue
@@ -229,25 +248,6 @@ class HistoricalDatasetBuilder:
 
                 self.checkpoint.mark_season_done(league_id, season_id)
                 self._progress("season_done", {"league_id": league_id, "season_id": season_id})
-
-            if not matched_any_season:
-                # TEMPORÁRIO — logging de diagnóstico, ver PR. Não altera o comportamento.
-                if not seasons_for_league:
-                    reason = (
-                        f"/api/v2/leagues/{league_id}/seasons/ devolveu 0 época(s) "
-                        "(o parser não encontrou nenhuma)"
-                    )
-                else:
-                    found_ids = [s.get("id") if isinstance(s, dict) else s for s in seasons_for_league]
-                    reason = (
-                        f"nenhuma das {len(seasons_for_league)} época(s) devolvida(s) "
-                        f"(ids={found_ids!r}) está em season_id_filter={season_id_filter!r}"
-                    )
-                print(
-                    f"[DIAG seasons] league_id={league_id}: {reason} -> "
-                    "/api/v2/events/ NUNCA foi chamado para esta liga; "
-                    f"o único pedido HTTP feito foi o GET a /leagues/{league_id}/seasons/."
-                )
 
     def build_to_list(self, **kwargs) -> list:
         """Conveniência: materializa `build(...)` numa lista (execuções pequenas/testes)."""
