@@ -1,5 +1,6 @@
 from src.live.providers.api_match_provider import APIMatchProvider
 from src.engine.live_pipeline import LivePipeline
+from src.engine.edge import calculate_edge, implied_probability
 
 provider = APIMatchProvider()
 pipeline = LivePipeline(match_provider=provider)
@@ -27,11 +28,12 @@ for match in events:
 
         odd = odds.get("over_15_goals")
 
-        if odd is None:
+        if odd is None or odd <= 1.0 or probability is None or probability <= 0:
             continue
 
-        implied = (1 / odd) * 100
-        edge = round(probability - implied, 2)
+        # Edge (%) — usa a implementação oficial e única de Edge (src/engine/edge.py)
+        implied = implied_probability(odd) * 100
+        edge = round(calculate_edge(probability / 100.0, odd) * 100, 2)
 
         if probability >= 60 or edge >= 5:
 
