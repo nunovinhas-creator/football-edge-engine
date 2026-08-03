@@ -47,6 +47,7 @@ class BSDHistoricalClient:
         self.base_url = (base_url or BASE_URL).rstrip("/")
         self.rate_limiter = rate_limiter or RateLimiter(max_calls=5, period_seconds=1.0)
         self.timeout = timeout
+        self.request_count = 0
 
     def _headers(self) -> Dict[str, str]:
         return {
@@ -74,6 +75,7 @@ class BSDHistoricalClient:
             params=params,
             timeout=self.timeout,
         )
+        self.request_count += 1
 
         if response.status_code >= 400:
             raise BSDAPIError(response.status_code, url, response.text)

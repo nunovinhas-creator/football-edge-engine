@@ -12,6 +12,7 @@ from src.historical_dataset.builder import HistoricalDatasetBuilder
 from src.historical_dataset.checkpoint import Checkpoint, NullCheckpoint
 from src.historical_dataset.client import BSDAPIError, BSDHistoricalClient
 from src.historical_dataset.rate_limiter import RateLimiter
+from src.historical_dataset.report import build_dataset_report, write_dataset_report
 from src.historical_dataset.storage import export_all, to_csv, to_dataframe, to_parquet, to_sqlite
 
 __all__ = [
@@ -27,4 +28,6 @@ __all__ = [
     "to_sqlite",
     "to_parquet",
     "to_dataframe",
+    "build_dataset_report",
+    "write_dataset_report",
 ]
