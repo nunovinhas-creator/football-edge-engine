@@ -3,6 +3,10 @@ name: Automatic Live Goal Logger & Engine
 on:
   workflow_dispatch:
 
+concurrency:
+  group: live-logger
+  cancel-in-progress: false
+
 permissions:
   contents: write
 
