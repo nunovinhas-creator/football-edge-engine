@@ -733,4 +733,49 @@ Por instrução explícita, nenhuma destas recomendações foi implementada. Fic
 
 ---
 
-*Fim do relatório. Nenhum ficheiro de código foi alterado durante esta auditoria — apenas este documento foi criado.*
+## 14. Definição Oficial de Edge (correção aplicada)
+
+**Data:** 2026-08-03. Âmbito: correção pontual de consistência matemática, seguindo os achados das secções 6.2 e 6.3. Ao contrário do resto deste documento (auditoria estática, sem alterações), esta secção documenta **código efetivamente alterado**.
+
+### 14.1 Definição escolhida
+
+```
+edge = prob_model − implied_probability(odd_house)
+     = prob_model − (1 / odd_house)
+```
+
+implementada como a única função oficial `calculate_edge()` em `src/engine/edge.py`. Recebe `prob_model` em fração (0.0–1.0] e `odd_house` como odd decimal (>1.0); devolve o edge na mesma escala fracionária — para apresentação em pontos percentuais, multiplica-se o resultado por 100.
+
+Esta é a **Convenção B** identificada em §6.2 (`edge = p − implied_prob`), não a Convenção A (`edge = EV = p·odd − 1`, que era a fórmula até agora implementada em `calculate_edge`).
+
+### 14.2 Porque foi escolhida esta convenção e não a outra
+
+1. **É a que o próprio documento já recomendava** (§13, recomendação 2): "unificar a definição de edge para pontos percentuais, `p − 1/odd`, por ser a mais intuitiva para leitura humana". Esta correção não inventa uma fórmula nova — implementa a recomendação que já constava da auditoria.
+2. **É a única das duas convenções que já funcionava corretamente nos limiares de decisão existentes.** `DecisionEngine.evaluate_bet` (`min_edge=5.0`), `evaluate_live_market` (limiares 10/3) e `is_valid_bet` (`edge<5`) já assumem edge em pontos percentuais, na gama aproximada de −100 a +100. A Convenção A (edge=EV, fração tipicamente entre −1 e +0.3) tornava esses mesmos limiares matematicamente inoperantes: `analyzer.py::analyze_bet` (`bet_edge >= 5`) e `evaluate_decision` (`edge >= 5`) nunca disparariam "BET"/"VALUE BET" para valores realistas, porque uma fração de EV quase nunca atinge 5. Escolher a Convenção B corrige esse mismatch em vez de o deslocar para outro sítio.
+3. **Mantém o Expected Value intacto e distinto do Edge.** `calculate_ev(prob_model, odd_house) = prob_model·odd_house − 1` não foi alterado — continua a ser a fórmula correta e já validada (§6.1, confiança "Alto"). Com a Convenção A, "edge" e "EV" eram literalmente o mesmo número com dois nomes (`expected_value()` chamava a mesma função que `edge()`), o que é a própria origem da confusão de nomenclatura descrita em §6.2. Com a Convenção B, Edge (desvio de probabilidade face ao mercado) e EV (retorno esperado por unidade apostada) passam a ser duas grandezas relacionadas mas distintas, cada uma com a sua própria fórmula e função — tal como os seus nomes sugerem.
+4. **É consistente com os fixtures de teste já existentes no repositório.** Os scripts de demonstração `src/tools/test_report.py`, `test_ranking.py`, `test_filter.py`, `test_stake.py` e `test_decision.py` já usavam valores como `edge=7.38, ev=15.5` para `odd=2.10`. Esses valores só emergem exatamente de `prob_model=0.55`: `edge=(0.55−1/2.10)×100=7.38` e `ev=(0.55×2.10−1)×100=15.5`. Ou seja, a Convenção B com `prob_model` em fração já era, implicitamente, o desenho pretendido pelo resto do sistema — só não estava a ser respeitado nos pontos onde o bug existia.
+
+### 14.3 Validação adicionada a `calculate_edge`
+
+`calculate_edge` passou a validar explicitamente os seus argumentos e a lançar `ValueError` para:
+- `prob_model` fora de `(0.0, 1.0]` (probabilidade inválida, incluindo o caso do bug histórico: alguém passar a probabilidade em escala 0–100, ex. `55` em vez de `0.55`);
+- `odd_house <= 1.0` (odd inválida, incluindo o caso do bug histórico: alguém passar uma probabilidade de mercado, tipicamente <1.0, no lugar da odd).
+
+Antes desta correção, ambos os casos deviam silenciosamente `-1.0`, um valor que parece um edge legítimo (edge de −100%) e por isso mascarava o erro — foi precisamente essa devolução silenciosa que permitiu ao bug de `market.py` (§14.4) passar despercebido. `calculate_ev` mantém deliberadamente o comportamento anterior (sentinela `-1.0`, sem exceção), por não ser o alvo desta correção e por já estar validada como correta (§6.1).
+
+### 14.4 Bug corrigido em `src/engine/market.py`
+
+- **Função afetada:** `analyze_market()`.
+- **Porque esperava uma odd:** chama `calculate_edge(prob_model, odd_house)`, cujo segundo argumento é, por contrato, uma odd decimal (>1.0), usada para derivar a probabilidade implícita de mercado internamente.
+- **Porque recebia uma probabilidade:** o código chamava `calculate_edge(model_probability, market_probability)`, onde `market_probability = implied_probability(odd)` já é a probabilidade implícita (0.0–1.0) — ou seja, a mesma quantidade que `calculate_edge` deveria calcular internamente estava a ser passada como se fosse a odd.
+- **Impacto:** como `market_probability` é (quase) sempre `<= 1.0`, a validação (agora explícita, antes um `return -1.0` silencioso) fazia com que `analyze_market()` devolvesse edge = −1.0 (ou, com a correção, levantasse `ValueError`) para praticamente qualquer combinação real de odds/probabilidade — o cálculo de valor de mercado deste módulo estava sistematicamente inutilizável.
+- **Correção:** `calculate_edge(model_probability, odd)` — passa a própria odd, tal como já acontecia (corretamente) na chamada equivalente a `calculate_ev`.
+- **Alcance da correção:** foi encontrado exatamente o mesmo padrão de bug, com o mesmo par de argumentos trocados, em `src/cli/predict.py` — o caminho ativo de `main.py predict`. Como o pedido desta tarefa é eliminar inconsistências de Edge (e não apenas corrigir a linha citada em `market.py`), esse segundo local foi corrigido da mesma forma (ver relatório técnico da PR para detalhe completo dos ficheiros alterados).
+
+### 14.5 Módulos que passam a reutilizar `calculate_edge`
+
+`src/engine/decision.py::DecisionEngine.evaluate_bet`, `src/engine/live_decision.py::evaluate_live_market` e `src/engine/bet_engine.py::evaluate_bet` recalculavam a mesma fórmula (`p − 1/odd`) de forma independente. Todos passaram a chamar `calculate_edge()` centralizada, eliminando a duplicação de fórmula identificada em §6.2 sem alterar o valor numérico produzido para inputs válidos.
+
+---
+
+*Fim do relatório de auditoria original (secções 1–13). A secção 14 documenta a correção de consistência de Edge aplicada posteriormente, incluindo os ficheiros de código alterados.*

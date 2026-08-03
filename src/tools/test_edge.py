@@ -6,7 +6,8 @@ from src.engine.edge import (
 
 
 odd = 2.10
-model = 55
+model_pct = 55
+model = model_pct / 100.0  # calculate_edge/calculate_ev esperam fração (0.0-1.0)
 
 
 market = implied_probability(
@@ -16,7 +17,7 @@ market = implied_probability(
 
 edge = calculate_edge(
     model,
-    market
+    odd
 )
 
 

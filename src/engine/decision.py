@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from src.engine.edge import calculate_edge
+
 @dataclass
 class BetRecommendation:
     market: str
@@ -23,14 +25,11 @@ class DecisionEngine:
         q = 1.0 - p
         b = bookie_odd - 1.0
 
-        if b <= 0 or p <= 0:
+        if b <= 0 or p <= 0 or p > 1.0:
             return BetRecommendation(market, model_prob_pct, bookie_odd, 0.0, 0.0, "PASS")
 
-        # Implied Probability da casa de apostas
-        implied_prob = 1.0 / bookie_odd
-        
-        # Edge (%)
-        edge = (p - implied_prob) * 100.0
+        # Edge (%) — usa a implementação oficial e única de Edge (src/engine/edge.py)
+        edge = calculate_edge(p, bookie_odd) * 100.0
 
         # Kelly Criterion: f* = (b*p - q) / b
         full_kelly = (b * p - q) / b

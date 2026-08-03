@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from src.engine.edge import calculate_edge
+
 
 @dataclass
 class LiveBetDecision:
@@ -16,9 +18,19 @@ def evaluate_live_market(
     market="NEXT GOAL"
 ):
 
-    implied = (1 / bookie_odd) * 100
+    p = probability_pct / 100.0
 
-    edge = probability_pct - implied
+    if bookie_odd <= 1.0 or p <= 0.0 or p > 1.0:
+        return LiveBetDecision(
+            market=market,
+            probability=round(probability_pct, 2),
+            odd=bookie_odd,
+            edge=0.0,
+            action="❄️ PASS"
+        )
+
+    # Edge (%) — usa a implementação oficial e única de Edge (src/engine/edge.py)
+    edge = calculate_edge(p, bookie_odd) * 100.0
 
 
     if edge >= 10:

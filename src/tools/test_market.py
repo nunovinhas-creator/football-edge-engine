@@ -10,7 +10,7 @@ odds = {
 
 result = analyze_market(
     odds,
-    45
+    0.45
 )
 
 

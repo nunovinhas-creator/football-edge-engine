@@ -2,6 +2,7 @@ from src.engine.analyzer import analyze_bet
 from src.engine.kelly import fractional_kelly
 from src.engine.confidence import confidence_level
 from src.engine.explanation import generate_explanation
+from src.engine.edge import calculate_edge, calculate_ev
 
 
 def evaluate_match(match):
@@ -74,12 +75,23 @@ def evaluate_bet(
 
     prob = probability / 100.0
 
-    ev = (prob * odd) - 1.0
+    if odd <= 1.0 or prob <= 0.0 or prob > 1.0:
+        return {
+            "odd": odd,
+            "probability": probability,
+            "ev": -100.0,
+            "edge": -100.0,
+            "value": False
+        }
+
+    # Edge e EV — reutiliza a implementação oficial e única (src/engine/edge.py)
+    ev = calculate_ev(prob, odd)
+    edge = calculate_edge(prob, odd)
 
     return {
         "odd": odd,
         "probability": probability,
         "ev": round(ev * 100, 2),
-        "edge": round((prob - (1 / odd)) * 100, 2) if odd > 1 else -100,
+        "edge": round(edge * 100, 2),
         "value": ev > 0
     }
