@@ -15,7 +15,7 @@ from src.api.live_fetcher import BSDLiveFetcher
 from src.live.pressure import PressureEngine
 from src.live.engine import LiveGoalEngine
 from src.models.live_state import LiveMatchState
-from src.backtest.logger import init_db, log_snapshot, update_outcomes
+from src.backtest.logger import init_db, log_snapshot
 
 def run_live_pipeline():
     init_db()
@@ -46,16 +46,12 @@ def run_live_pipeline():
             )
             continue
 
-        # 1. Atualizar se existiu golo nas entradas registadas há ~15 minutos
-        # (Consideramos se o placard mudou em relação ao snapshot anterior)
-        goal_just_happened = match_data.get('goal_occurred_recently', False)
-        update_outcomes(
-            match_id=str(match_data['match_id']),
-            current_minute=int(match_data.get('current_minute') or 0),
-            goal_occurred=goal_just_happened
-        )
+        # A label goal_in_next_15m é recalculada para toda a tabela pelo
+        # passo "4.5 Recalcular Labels" do workflow (create_labels.py,
+        # que reutiliza src.backtest.goal_label) — não há recalculo
+        # incremental aqui.
 
-        # 3. Previsão do Motor
+        # Previsão do Motor
         pressure = PressureEngine.score(
             minute=match_data.get("current_minute",0),
             home_score=match_data.get("home_score",0),
