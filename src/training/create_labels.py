@@ -1,4 +1,12 @@
 import sqlite3
+import sys
+from pathlib import Path
+
+ROOT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from src.backtest.goal_label import recompute_goal_in_next_15m
 
 
 DB="data/live_history.db"
@@ -9,29 +17,7 @@ conn=sqlite3.connect(DB)
 cur=conn.cursor()
 
 
-cur.execute("""
-UPDATE match_snapshots
-SET goal_in_next_15m =
-(
-SELECT 
-CASE
-WHEN EXISTS
-(
-SELECT 1
-FROM match_snapshots b
-WHERE 
-b.match_id = match_snapshots.match_id
-AND b.home_score + b.away_score >
-match_snapshots.home_score + match_snapshots.away_score
-AND b.current_minute > match_snapshots.current_minute
-AND b.current_minute <= match_snapshots.current_minute + 15
-)
-THEN 1
-ELSE 0
-END
-)
-WHERE current_minute IS NOT NULL
-""")
+recompute_goal_in_next_15m(conn)
 
 
 conn.commit()

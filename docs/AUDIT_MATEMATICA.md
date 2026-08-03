@@ -998,3 +998,143 @@ observável em produção (nenhum entry point de `main.py` importa
 `scripts/live_scanner.py`); o único efeito é a remoção de uma fórmula de
 Edge duplicada, mantendo `src/engine/edge.py::calculate_edge` como única
 fonte oficial em todo o repositório.
+
+---
+
+## 18. Consolidação do label `goal_in_next_15m`
+
+**Data:** 2026-08-03. Âmbito: auditoria e unificação de todas as
+implementações da lógica de rotulagem `goal_in_next_15m` de
+`data/live_history.db`, achado nº8 do sumário executivo (§8) e detalhado
+em §10.2. **Nenhuma fórmula do Dixon-Coles, Monte Carlo, λ, Kelly, Goal
+Engine, Machine Learning ou Decision Engine foi alterada** — apenas o
+cálculo desta label, conforme pedido.
+
+### 18.1 Confirmação da auditoria: três implementações, não quatro nem duas
+
+A auditoria original (§10.2) continua exata. Foram confirmadas, por
+inspeção direta do código e por pesquisa global de `goal_in_next_15m` em
+todo o repositório, exatamente três implementações divergentes, todas já
+descritas em §10.2:
+
+| # | Ficheiro / função | Definição matemática | Corre em produção? |
+|---|---|---|---|
+| (a) | `src/backtest/logger.py::update_outcomes` (chamada por `src/engine/live_monitor.py`) | `UPDATE ... SET goal_in_next_15m = ? WHERE match_id=? AND current_minute BETWEEN (minuto_atual−18) AND (minuto_atual−12) AND goal_in_next_15m IS NULL` — janela de tolerância `[-18,-12]` à volta de "15 min atrás", incremental, só quando `NULL` | Sim, dentro de `live_monitor.py`, mas sempre sobrescrita por (b) no mesmo workflow |
+| (b) | `src/training/create_labels.py` | `UPDATE ... SET goal_in_next_15m = CASE WHEN EXISTS (snapshot b do mesmo match_id com golos(b) > golos(atual) AND minuto(b) > minuto_atual AND minuto(b) <= minuto_atual+15) THEN 1 ELSE 0 END WHERE current_minute IS NOT NULL` — janela `(minuto, minuto+15]`, tabela inteira, sobrescreve sempre | Sim — passo "4.5" do workflow `live_logger.yml`, corre **por último**, por isso é sempre o valor final persistido |
+| (c) | `src/backtest/labeler.py` | `UPDATE ... SET goal_in_next_15m = 1 WHERE id IN (snapshot a com snapshot posterior b do mesmo match_id, b.timestamp > a.timestamp AND b.timestamp <= a.timestamp+15min, com placar diferente)` — janela de 15 min sobre `timestamp` (relógio), só escreve `1` explicitamente | Não — script órfão, sem nenhum import nem chamada em workflows, testes ou outros módulos |
+
+Diferenças entre as três: (a) usa uma janela de tolerância deslocada e
+incremental sobre `current_minute`; (b) usa uma janela exata e fechada à
+direita sobre `current_minute`, recalculada para toda a tabela; (c) usa
+`timestamp` de relógio em vez de `current_minute`, e nunca atribui `0`
+explicitamente. As três produzem resultados diferentes para os mesmos
+dados sempre que a cadência real de `live_monitor.py` não é exatamente
+"uma vez a cada 15 minutos" — e (a) e (c) nunca são as que ficam
+persistidas, porque (b) corre depois de (a) no workflow e (c) nunca corre.
+
+### 18.2 Implementação oficial escolhida
+
+Escolhida a definição de **(b)**, agora centralizada em
+`src/backtest/goal_label.py::recompute_goal_in_next_15m`:
+
+```
+goal_in_next_15m(s) = 1  se existe um snapshot posterior s' do mesmo
+                          match_id, em minuto m', tal que
+                              m < m' <= m + 15
+                      e   golos(s') > golos(s)
+                    = 0  caso contrário
+```
+
+(`golos(s) = home_score(s) + away_score(s)`; só se recalculam linhas com
+`current_minute IS NOT NULL`.)
+
+Razões para escolher esta definição, e não (a) ou (c):
+
+1. **É a que já determinava o valor efetivamente persistido em produção.** Como (b) corre por último no workflow `live_logger.yml` e sobrescreve incondicionalmente, o conteúdo atual de `data/live_history.db` já reflete esta definição, não a de (a). Escolher qualquer outra implicaria reescrever o histórico existente (1683 snapshots, 75 jogos) com uma definição diferente da que gerou os dados já usados por `build_dataset.py`/`train_model.py`/`audit_dataset.py`.
+2. **Não depende do relógio de execução do workflow.** (a) e (c) assumem, implícita ou explicitamente, uma cadência de execução regular (`[-18,-12]` em (a); `timestamp+15min` em (c)) — se `live_monitor.py` corre com atraso, corre duas vezes seguidas, ou falha uma execução, ambas produzem janelas erradas. (b) deriva inteiramente de `current_minute`, que é um dado do próprio jogo, não da cadência de execução do scraper.
+3. **É determinística e idempotente**, ao contrário de (a) (`AND goal_in_next_15m IS NULL` faz depender o resultado da ordem/número de vezes que a função já correu) — confirmado nesta consolidação: recalcular (b) sobre uma cópia da `data/live_history.db` atual produz exatamente a mesma distribição (1135 negativos / 548 positivos) que já lá estava.
+
+### 18.3 Consolidação aplicada
+
+- **`src/backtest/goal_label.py`** (novo): única implementação oficial —
+  `recompute_goal_in_next_15m(conn)` (usa uma ligação já aberta,
+  não decide commit) e `recompute_goal_in_next_15m_for_db(db_path)`
+  (conveniência para scripts, abre/faz commit/fecha).
+- **`src/training/create_labels.py`**: deixou de ter o SQL embutido;
+  passa a chamar `recompute_goal_in_next_15m(conn)`. Comportamento de CLI
+  (mensagens impressas, distribuição final) inalterado.
+- **`src/backtest/labeler.py`**: a lógica divergente baseada em
+  `timestamp` foi substituída por uma chamada à mesma
+  `recompute_goal_in_next_15m(conn)` — deixa de existir uma terceira
+  fórmula, mesmo mantendo o ficheiro como ponto de entrada manual (não é
+  chamado por nada em produção, tal como antes).
+- **`src/backtest/logger.py`**: função `update_outcomes` **removida**.
+  Era sempre sobrescrita por (b) no mesmo workflow (§10.2), pelo que o
+  seu cálculo — a única divergência que corria de facto em produção antes
+  de ser sobreposta — deixou de ter qualquer efeito observável no valor
+  final; mantê-la seria manter código morto que recalcula uma fórmula
+  incorreta sem propósito.
+- **`src/engine/live_monitor.py`**: deixou de importar e chamar
+  `update_outcomes` (ver ponto anterior). `init_db`/`log_snapshot`
+  (schema e inserção de snapshots) não foram alterados.
+- Nenhum outro consumidor da label precisou de alteração:
+  `src/training/build_dataset.py`, `train_model.py`, `audit_dataset.py`
+  e `scripts/app.py` apenas **leem** a coluna `goal_in_next_15m` já
+  persistida — não a calculam — pelo que continuam a funcionar sem
+  qualquer mudança de código.
+
+### 18.4 Validação de compatibilidade
+
+- **`data/live_history.db`**: recalcular `goal_in_next_15m` com a nova
+  implementação sobre uma cópia da base de dados real (1683 snapshots, 75
+  jogos) produz **exatamente a mesma distribuição** que já lá estava
+  (1135 negativos / 548 positivos) — confirma que a consolidação não
+  altera nenhum valor já persistido, apenas remove a duplicação de código
+  que o gerava.
+- **Treino** (`build_dataset.py` → `training_dataset.csv` →
+  `train_model.py`): `build_dataset.py` foi executado sobre a base de
+  dados real após a alteração e produz a mesma distribuição de
+  `goal_in_next_15m` (1135/548) e o mesmo número de colunas; não depende
+  de como a label foi calculada, só de já existir na tabela.
+- **Backtesting** (`run_backtest.py --demo`): não usa
+  `goal_in_next_15m` — o dataset histórico de `src/backtest/historical`
+  deriva o resultado de mercado do placar final do jogo, não desta label
+  ao vivo. Confirmado por pesquisa global: nenhum ficheiro em
+  `src/backtest/historical/` referencia `goal_in_next_15m`. Execução
+  `python run_backtest.py --demo` após a alteração produz o mesmo resumo
+  numérico de sempre (8 jogos carregados, 3 apostas, ROI 53.33%).
+- **Live monitor** (`src/engine/live_monitor.py`): continua a chamar
+  `init_db`/`log_snapshot` sem alteração; deixou apenas de chamar
+  `update_outcomes` (§18.3) — o recalculo da label passa a ficar
+  inteiramente a cargo do passo "4.5" do workflow
+  (`create_labels.py`, já existente, agora reutilizando a implementação
+  central).
+
+### 18.5 Testes adicionados
+
+`tests/backtest/test_goal_label.py` (7 testes), sobre uma base de dados
+sqlite em memória com o schema mínimo de `match_snapshots`:
+
+- golo exatamente aos 15 minutos do snapshot (fronteira `m+15`, inclusive) → positivo;
+- golo antes dos 15 minutos → positivo;
+- golo depois dos 15 minutos (`m+16`) → negativo;
+- vários golos dentro da janela → continua positivo (não conta golos, só existência);
+- sem golos no jogo → negativo em todos os snapshots;
+- golo já refletido no próprio snapshot (mesmo minuto) não conta como "dentro da janela" (a definição exige `m' > m`);
+- linhas com `current_minute IS NULL` não são tocadas pelo recalculo.
+
+### 18.6 Testes e impacto
+
+`python -m pytest tests/` (213 testes, incluindo os 7 novos) totalmente
+verde. `python main.py predict` falha da mesma forma que nas secções
+15.6/17.3 (falta de credenciais de API neste ambiente — comportamento de
+baseline, sem novas exceções; esta pipeline nunca referenciou
+`goal_in_next_15m`). `python run_backtest.py --demo` produz o mesmo
+resumo numérico de sempre (§18.4). Impacto esperado: nenhuma mudança de
+valor observável em `data/live_history.db` nem nos pipelines de
+treino/backtesting/live que a consomem; o único efeito é a remoção de
+duas fórmulas divergentes (`update_outcomes` e a versão baseada em
+`timestamp` de `labeler.py`), passando a existir uma única fonte de
+verdade, `src/backtest/goal_label.py::recompute_goal_in_next_15m`,
+reutilizada por todos os pontos de entrada que precisam de calcular esta
+label.

@@ -123,26 +123,6 @@ def log_snapshot(match_data: Dict[str, Any]):
     conn.commit()
     conn.close()
 
-def update_outcomes(match_id: str, current_minute: int, goal_occurred: bool):
-    current_minute = int(current_minute or 0)
-    """
-    Atualiza snapshots antigos (registados há 15 minutos) com o resultado real.
-    """
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Atualiza registos entre minute-18 e minute-12 para dar margem à janela de 15m
-    cursor.execute("""
-        UPDATE match_snapshots
-        SET goal_in_next_15m = ?
-        WHERE match_id = ? 
-          AND current_minute BETWEEN ? AND ?
-          AND goal_in_next_15m IS NULL
-    """, (goal_occurred, match_id, current_minute - 18, current_minute - 12))
-    
-    conn.commit()
-    conn.close()
-
 if __name__ == "__main__":
     init_db()
     print(f"✅ Base de dados do Logger pronta em: {DB_PATH}")
