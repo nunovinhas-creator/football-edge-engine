@@ -9,7 +9,6 @@ from rich.table import Table
 from rich import box
 
 from src.models.live_state import LiveMatchState
-from src.engine.simulation import MonteCarloSimulator
 from src.engine.decision import DecisionEngine
 from src.live.features.goal_window import GoalWindowPredictor
 from src.model.ml_predictor import LiveMLPredictor
@@ -27,27 +26,19 @@ def render_live_dashboard(
     analysis: dict
 ):
 
-    sim_engine = MonteCarloSimulator(n_simulations=1000)
     dec_engine = DecisionEngine()
     window_predictor = GoalWindowPredictor()
     ml_predictor = LiveMLPredictor()
 
     live_analysis = analysis["live"]
+    # Única simulação Monte Carlo do pipeline (já usa o λ dinâmico calculado
+    # por LivePipeline.calculate_dynamic_lambda) — o dashboard consome-a
+    # diretamente em vez de recalcular com λ fixos.
     pipeline_sim = analysis["simulation"]
-
-    h_score, a_score = map(int, score.split("-"))
-
-    sim_res = sim_engine.run_match_simulation(
-        current_minute=match_state.minute,
-        current_home_score=h_score,
-        current_away_score=a_score,
-        home_lambda=1.6,
-        away_lambda=1.1
-    )
 
     bet_rec = dec_engine.evaluate_bet(
         "Over 1.5",
-        sim_res.over_15_prob,
+        pipeline_sim["over_15"],
         bookie_over15_odd
     )
 
@@ -82,9 +73,9 @@ def render_live_dashboard(
     sim_table.add_column("Market")
     sim_table.add_column("Probability")
 
-    sim_table.add_row("Over 1.5", f"{sim_res.over_15_prob}%")
-    sim_table.add_row("Over 2.5", f"{sim_res.over_25_prob}%")
-    sim_table.add_row("BTTS", f"{sim_res.btts_prob}%")
+    sim_table.add_row("Over 1.5", f"{pipeline_sim['over_15']}%")
+    sim_table.add_row("Over 2.5", f"{pipeline_sim['over_25']}%")
+    sim_table.add_row("BTTS", f"{pipeline_sim['btts']}%")
 
     dec_table = Table(box=box.SIMPLE, show_header=False, expand=True)
     dec_table.add_column("Metric")
