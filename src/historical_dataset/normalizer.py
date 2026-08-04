@@ -90,6 +90,31 @@ STAT_ALIASES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def _unwrap_resource(payload: Any, key: str) -> Any:
+    """
+    Desembrulha `{key: {...}}` quando presente, devolvendo o dict interno.
+
+    A BSD API real embrulha respostas de sub-recursos de evento sob uma
+    chave com o nome do próprio recurso — padrão já reconhecido para
+    `/leagues/{id}/seasons/` -> `{"seasons": [...]}` (ver
+    `builder._extract_seasons`) e para `/events/{id}/player-stats/` ->
+    `{"player_stats": [...]}` (ver `research/pressure_shots/build_raw_table.py`).
+    O mesmo padrão aplica-se a `/events/{id}/odds/` -> `{"odds": {...}}`,
+    confirmado por código de produção ativo (`main.py live`):
+    `analysis["odds"]["odds"]["over_15_goals"]` em `src/cli/live.py` e
+    `scripts/live_scanner.py`, onde `analysis["odds"]` é o JSON devolvido
+    sem alterações por `APIOddsProvider.get_live_odds()` — a mesma chamada
+    a `GET /events/{id}/odds/` que este builder faz.
+
+    Se `payload[key]` não for um dict (ou a chave não existir), devolve
+    `payload` tal como veio — mantém compatibilidade com a forma já
+    desembrulhada (datasets/testes anteriores a esta correção).
+    """
+    if isinstance(payload, dict) and isinstance(payload.get(key), dict):
+        return payload[key]
+    return payload
+
+
 def _lookup(container: Any, *candidates: str) -> Optional[Any]:
     """Procura o primeiro de `candidates` num dict, ignorando maiúsculas/minúsculas."""
     if not isinstance(container, dict):
@@ -176,9 +201,18 @@ def _extract_bookmakers(comparison: Any) -> list:
 def _team_containers(stats: Any) -> Tuple[Optional[dict], Optional[dict]]:
     if not isinstance(stats, dict):
         return None, None
-    if "home" in stats or "away" in stats:
-        return stats.get("home"), stats.get("away")
-    teams = stats.get("teams")
+    # Forma real da BSD API: `/events/{id}/stats/` devolve o payload
+    # embrulhado sob a chave "stats" (ver `_unwrap_resource`), confirmado
+    # por `research/pressure_shots/build_raw_table.py`:
+    # `stats.get("stats").get("home")`, validado contra respostas reais da
+    # API. A forma já desembrulhada (`{"home": ..., "away": ...}`
+    # diretamente no topo) continua suportada para compatibilidade.
+    container = _unwrap_resource(stats, "stats")
+    if not isinstance(container, dict):
+        return None, None
+    if "home" in container or "away" in container:
+        return container.get("home"), container.get("away")
+    teams = container.get("teams")
     if isinstance(teams, list):
         home = next((t for t in teams if t.get("is_home") is True or t.get("side") in ("home", "HOME")), None)
         away = next((t for t in teams if t.get("is_home") is False or t.get("side") in ("away", "AWAY")), None)
@@ -229,17 +263,31 @@ def normalize_event(
 
     home_stats, away_stats = _team_containers(stats)
 
-    home_odd, draw_odd, away_odd = _extract_1x2(odds)
-    over_1_5, under_1_5 = _extract_over_under(odds, "1.5")
-    over_2_5, under_2_5 = _extract_over_under(odds, "2.5")
-    over_3_5, under_3_5 = _extract_over_under(odds, "3.5")
-    btts_yes, btts_no = _extract_btts(odds)
+    # Forma real da BSD API: `/events/{id}/odds/` devolve o payload
+    # embrulhado sob a chave "odds" (ver `_unwrap_resource`), confirmado
+    # por código de produção ativo (`main.py live`):
+    # `analysis["odds"]["odds"]["over_15_goals"]` em `src/cli/live.py` e
+    # `scripts/live_scanner.py`. A forma já desembrulhada continua
+    # suportada para compatibilidade com datasets/testes anteriores.
+    odds_payload = _unwrap_resource(odds, "odds")
+
+    home_odd, draw_odd, away_odd = _extract_1x2(odds_payload)
+    over_1_5, under_1_5 = _extract_over_under(odds_payload, "1.5")
+    over_2_5, under_2_5 = _extract_over_under(odds_payload, "2.5")
+    over_3_5, under_3_5 = _extract_over_under(odds_payload, "3.5")
+    btts_yes, btts_no = _extract_btts(odds_payload)
 
     bookmakers_available = _extract_bookmakers(odds_comparison)
 
     match_level_extra = {}
     if isinstance(stats, dict):
-        match_level_extra = {k: v for k, v in stats.items() if k not in ("home", "away", "teams")}
+        exclude_keys = {"home", "away", "teams"}
+        if isinstance(stats.get("stats"), dict):
+            # Payload embrulhado: "stats" já foi consumido por
+            # `_team_containers` acima — excluir para não duplicar
+            # home/away dentro de `extra_match_stats`.
+            exclude_keys.add("stats")
+        match_level_extra = {k: v for k, v in stats.items() if k not in exclude_keys}
 
     return {
         "event_id": event.get("id"),
@@ -271,7 +319,7 @@ def normalize_event(
         "odds_under_3_5": under_3_5,
         "odds_btts_yes": btts_yes,
         "odds_btts_no": btts_no,
-        "bookmaker": "consensus" if odds else None,
+        "bookmaker": "consensus" if odds_payload else None,
         "bookmakers_available": ",".join(bookmakers_available) if bookmakers_available else None,
         "cards_home_yellow": _extract_team_stat(home_stats, "yellow_cards"),
         "cards_home_red": _extract_team_stat(home_stats, "red_cards"),

@@ -236,6 +236,71 @@ class TestNormalizeOddsRealBSDShape(unittest.TestCase):
         self.assertEqual(record["odds_under_2_5"], 1.9)
 
 
+class TestNormalizeOddsRealBSDEnvelope(unittest.TestCase):
+    """
+    Forma *realmente* devolvida pela BSD API: o dict plano de
+    `TestNormalizeOddsRealBSDShape` vem, na prática, embrulhado sob a
+    chave "odds" — `{"odds": {home_win: ..., ...}}` — confirmado por
+    código de produção ativo (`main.py live`):
+    `analysis["odds"]["odds"]["over_15_goals"]` em `src/cli/live.py` e
+    `scripts/live_scanner.py`, onde `analysis["odds"]` é o JSON devolvido
+    sem alterações por `APIOddsProvider.get_live_odds()` (mesma chamada a
+    `GET /events/{id}/odds/` usada por este builder). Este invólucro não
+    era desembrulhado antes desta correção, pelo que todas as colunas de
+    odds ficavam a None mesmo com os aliases corretos.
+    """
+
+    WRAPPED_REAL_ODDS = {"odds": dict(TestNormalizeOddsRealBSDShape.REAL_ODDS)}
+
+    def test_unwraps_odds_envelope_for_1x2(self):
+        record = normalize_event(_event(), odds=self.WRAPPED_REAL_ODDS)
+        self.assertEqual(record["odds_home"], 1.12)
+        self.assertEqual(record["odds_draw"], 8.20)
+        self.assertEqual(record["odds_away"], 15.93)
+
+    def test_unwraps_odds_envelope_for_over_under(self):
+        record = normalize_event(_event(), odds=self.WRAPPED_REAL_ODDS)
+        self.assertEqual(record["odds_over_1_5"], 1.05)
+        self.assertEqual(record["odds_under_1_5"], 6.50)
+        self.assertEqual(record["odds_over_2_5"], 1.36)
+        self.assertEqual(record["odds_under_2_5"], 2.89)
+        self.assertEqual(record["odds_over_3_5"], 2.75)
+        self.assertEqual(record["odds_under_3_5"], 1.42)
+
+    def test_unwraps_odds_envelope_for_btts(self):
+        record = normalize_event(_event(), odds=self.WRAPPED_REAL_ODDS)
+        self.assertEqual(record["odds_btts_yes"], 2.15)
+        self.assertEqual(record["odds_btts_no"], 1.63)
+
+    def test_unwraps_odds_envelope_sets_bookmaker_consensus(self):
+        record = normalize_event(_event(), odds=self.WRAPPED_REAL_ODDS)
+        self.assertEqual(record["bookmaker"], "consensus")
+
+    def test_extra_odds_preserves_raw_envelope_unchanged(self):
+        """`extra_odds` deve continuar a guardar o payload bruto (com invólucro), não o desembrulhado."""
+        record = normalize_event(_event(), odds=self.WRAPPED_REAL_ODDS)
+        self.assertEqual(json.loads(record["extra_odds"]), self.WRAPPED_REAL_ODDS)
+
+    def test_empty_odds_envelope_leaves_columns_none(self):
+        """`{"odds": {}}` (jogo sem odds publicadas) não deve inventar valores nem marcar bookmaker."""
+        record = normalize_event(_event(), odds={"odds": {}})
+        for col in (
+            "odds_home", "odds_draw", "odds_away",
+            "odds_over_1_5", "odds_under_1_5",
+            "odds_over_2_5", "odds_under_2_5",
+            "odds_over_3_5", "odds_under_3_5",
+            "odds_btts_yes", "odds_btts_no",
+        ):
+            self.assertIsNone(record[col])
+        self.assertIsNone(record["bookmaker"])
+
+    def test_already_unwrapped_shape_still_supported(self):
+        """Compatibilidade: passar o dict já desembrulhado diretamente continua a funcionar."""
+        record = normalize_event(_event(), odds=dict(TestNormalizeOddsRealBSDShape.REAL_ODDS))
+        self.assertEqual(record["odds_home"], 1.12)
+        self.assertEqual(record["odds_away"], 15.93)
+
+
 class TestNormalizeStats(unittest.TestCase):
 
     def test_home_away_containers_with_known_aliases(self):
@@ -318,6 +383,63 @@ class TestNormalizeStats(unittest.TestCase):
 
         self.assertEqual(record["cards_home_yellow"], 1)
         self.assertEqual(record["cards_away_yellow"], 2)
+
+
+class TestNormalizeStatsRealBSDEnvelope(unittest.TestCase):
+    """
+    Forma *realmente* devolvida pela BSD API: `/events/{id}/stats/` vem
+    embrulhado sob a chave "stats" — `{"stats": {"home": ..., "away": ...},
+    ...outros campos ao nível do jogo}` — confirmado por
+    `research/pressure_shots/build_raw_table.py`
+    (`stats.get("stats").get("home")`), validado contra respostas reais
+    da API (74 ligas testadas, ver `research/pressure_shots/README.md`).
+    Este invólucro não era desembrulhado antes desta correção, pelo que
+    `_team_containers` nunca encontrava "home"/"away" e todas as colunas
+    de estatísticas ficavam a None.
+    """
+
+    WRAPPED_STATS = {
+        "stats": {
+            "home": {"yellow_cards": 2, "corners": 6, "shots_total": 14, "possession": 55},
+            "away": {"yellow_cards": 3, "corners": 3, "shots_total": 8, "possession": 45},
+        },
+        "shotmap": [{"minute": 10, "team": "home"}],
+        "momentum": [1, 2, 3],
+    }
+
+    def test_unwraps_stats_envelope_for_team_stats(self):
+        record = normalize_event(_event(), stats=self.WRAPPED_STATS)
+
+        self.assertEqual(record["cards_home_yellow"], 2)
+        self.assertEqual(record["cards_away_yellow"], 3)
+        self.assertEqual(record["corners_home"], 6)
+        self.assertEqual(record["corners_away"], 3)
+        self.assertEqual(record["shots_home"], 14)
+        self.assertEqual(record["possession_away"], 45)
+
+    def test_unwraps_stats_envelope_preserves_match_level_extras(self):
+        """shotmap/momentum (irmãos de "stats" no payload real) continuam em extra_match_stats."""
+        record = normalize_event(_event(), stats=self.WRAPPED_STATS)
+
+        extra_match = json.loads(record["extra_match_stats"])
+        self.assertIn("shotmap", extra_match)
+        self.assertIn("momentum", extra_match)
+        self.assertNotIn("stats", extra_match)
+
+    def test_empty_stats_envelope_leaves_columns_none(self):
+        record = normalize_event(_event(), stats={"stats": {}})
+        for col in ("cards_home_yellow", "corners_home", "shots_home", "possession_home"):
+            self.assertIsNone(record[col])
+
+    def test_already_unwrapped_shape_still_supported(self):
+        """Compatibilidade: passar {"home": ..., "away": ...} diretamente (sem invólucro) continua a funcionar."""
+        stats = {
+            "home": {"yellow_cards": 1, "corners": 5},
+            "away": {"yellow_cards": 2, "corners": 2},
+        }
+        record = normalize_event(_event(), stats=stats)
+        self.assertEqual(record["cards_home_yellow"], 1)
+        self.assertEqual(record["corners_away"], 2)
 
 
 if __name__ == "__main__":
