@@ -1,6 +1,13 @@
 name: Automatic Live Goal Logger & Engine
 
+# `schedule` aciona o Scanner autónomo (src/alerts/live_scanner.py — apenas
+# Alerta Live Premium) de 2 em 2 minutos, entre as 08:00 e as 23:58 UTC,
+# todos os dias. `workflow_dispatch` mantém-se disponível para execução
+# manual do pipeline completo existente (src/engine/live_monitor.py, com
+# alerta +EV e logging para data/live_history.db) — ver step "4b." abaixo.
 on:
+  schedule:
+    - cron: '*/2 8-23 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -38,7 +45,17 @@ jobs:
           echo "===== TEST RICH ====="
           python -c "import rich; print('Rich OK')"
 
-      - name: 4. Executar Monitorização e Logger
+      - name: 4a. Executar Scanner Live Autónomo (execução agendada — apenas Alerta Live Premium)
+        if: github.event_name == 'schedule'
+        env:
+          BSD_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          PYTHONPATH=. python src/alerts/live_scanner.py
+
+      - name: 4b. Executar Monitorização e Logger (execução manual — pipeline completo)
+        if: github.event_name != 'schedule'
         env:
           BSD_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -56,5 +73,12 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           if [ -f data/live_history.db ]; then
             git add -f data/live_history.db
+          fi
+          # data/live_alerts.db guarda o estado de anti-spam do Alerta Live
+          # Premium (LiveAlertMonitor + ScannerAntiSpamGuard) — sem o
+          # persistir aqui, cada execução agendada arrancaria de um
+          # checkout limpo e perderia o cooldown/anti-spam entre ciclos.
+          if [ -f data/live_alerts.db ]; then
+            git add -f data/live_alerts.db
           fi
           git diff --quiet && git diff --staged --quiet || (git commit -m "chore(logger): auto-update live history db [skip ci]" && git push)
