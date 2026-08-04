@@ -10,6 +10,7 @@ para não inundar o Telegram em execuções repetidas do monitor.
 import sqlite3
 
 from src.backtest.logger import DB_PATH, init_db
+from src.report.explainability import format_explanation_block, generate_explanation
 from src.utils.telegram_notifier import send_telegram_alert
 
 
@@ -48,10 +49,18 @@ def mark_alerted(match_id):
     conn.close()
 
 
-def notify_if_value(match_id, home_team, away_team, minute, score, decision) -> bool:
+def notify_if_value(match_id, home_team, away_team, minute, score, decision, snapshot=None) -> bool:
     """Envia um alerta Telegram no máximo uma vez por jogo quando o motor
     de decisão (src.engine.live_decision.evaluate_live_market) reporta
-    valor (+EV)."""
+    valor (+EV).
+
+    `snapshot` (opcional, Melhoria #13): quando fornecido — o MatchSnapshot
+    completo já construído por `src.report.dashboard_data.build_match_snapshot`
+    — o alerta ganha o bloco "🧠 Porque esta decisão?" gerado por
+    `src.report.explainability.generate_explanation`, puramente
+    interpretativo sobre valores já calculados. Sem `snapshot`, o
+    comportamento é exatamente o mesmo de antes desta camada existir.
+    """
 
     if decision.action != "🔥 BET VALUE":
         return False
@@ -68,6 +77,10 @@ def notify_if_value(match_id, home_team, away_team, minute, score, decision) -> 
         f"💰 Odd: {decision.odd}\n"
         f"📈 Edge: {decision.edge}%"
     )
+
+    if snapshot is not None:
+        explanation = generate_explanation(snapshot)
+        message += "\n\n" + format_explanation_block(explanation)
 
     if send_telegram_alert(message):
         mark_alerted(match_id)

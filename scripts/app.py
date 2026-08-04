@@ -40,6 +40,7 @@ from src.report.dashboard_data import (
     load_value_alerts,
     run_demo_backtest,
 )
+from src.report.explainability import generate_explanation
 
 DASHBOARD_VERSION = "Pro v1.0"
 
@@ -89,6 +90,14 @@ st.markdown(
         border-left: 4px solid #1DB954; padding-left: 10px;
     }
     .fee-explain li { margin-bottom: 6px; }
+    .fee-why-col { padding: 10px 4px; }
+    .fee-why-title { font-weight: 700; margin-bottom: 6px; }
+    .fee-why-col ul { margin: 0; padding-left: 18px; }
+    .fee-why-col li { margin-bottom: 6px; }
+    .fee-why-summary {
+        margin-top: 6px; padding-top: 10px; border-top: 1px solid rgba(127,127,127,0.25);
+        font-style: italic;
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -356,6 +365,50 @@ def render_explanation_panel(snap: dict) -> None:
     st.markdown(f'<div class="fee-card fee-explain"><ul>{items}</ul></div>', unsafe_allow_html=True)
 
 
+def render_why_this_decision_panel(snap: dict) -> None:
+    """
+    Melhoria #13 — Explainability Engine (`src.report.explainability`).
+    Interpretação 100% determinística (sem IA/LLM) sobre os valores já
+    presentes no snapshot: não recalcula nenhuma probabilidade, edge, EV,
+    Kelly ou lambda, nem altera nenhuma decisão do motor.
+    """
+    section_title("🧠 Porque esta decisão?")
+    explanation = generate_explanation(snap)
+
+    def _list_html(items):
+        if not items:
+            return "<li><em>Nenhum.</em></li>"
+        return "".join(f"<li>{i}</li>" for i in items)
+
+    cols = st.columns(3)
+    with cols[0]:
+        st.markdown(
+            f'<div class="fee-card fee-why-col">'
+            f'<div class="fee-why-title">✔ Pontos positivos</div>'
+            f'<ul>{_list_html(explanation.positives)}</ul></div>',
+            unsafe_allow_html=True,
+        )
+    with cols[1]:
+        st.markdown(
+            f'<div class="fee-card fee-why-col">'
+            f'<div class="fee-why-title">⚠ Riscos</div>'
+            f'<ul>{_list_html(explanation.negatives)}</ul></div>',
+            unsafe_allow_html=True,
+        )
+    with cols[2]:
+        st.markdown(
+            f'<div class="fee-card fee-why-col">'
+            f'<div class="fee-why-title">🚨 Avisos</div>'
+            f'<ul>{_list_html(explanation.warnings)}</ul></div>',
+            unsafe_allow_html=True,
+        )
+
+    st.markdown(
+        f'<div class="fee-card fee-why-summary">Resumo: {explanation.summary}</div>',
+        unsafe_allow_html=True,
+    )
+
+
 def render_logs_panel(snap: dict) -> None:
     with st.expander("🧾 Logs — snapshot completo (todos os valores usados nesta análise)"):
         st.json(snap)
@@ -379,6 +432,7 @@ def render_match(snap: dict, bankroll: float) -> None:
     render_live_panel(snap)
     render_strength_panel(snap)
     render_explanation_panel(snap)
+    render_why_this_decision_panel(snap)
     render_logs_panel(snap)
 
 
