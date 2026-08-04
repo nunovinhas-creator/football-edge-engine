@@ -1,21 +1,28 @@
 """
 Testes de integração da ligação entre `src.engine.live_monitor` (o
-monitor automático executado pelo workflow `live_logger.yml`) e o Alerta
-Live Premium (`src.alerts.live_premium_alerts`).
+monitor automático executado pelo workflow `live_logger.yml`), o Alerta
+Live Premium (`src.alerts.live_premium_alerts`) e o Goal Imminent
+Detection (`src.alerts.goal_imminent_detector`).
 
 Cobrem apenas a "cablagem" (wiring):
   - `run_live_pipeline()` constrói o MatchSnapshot real via
     `build_match_snapshot` e chama `LiveAlertMonitor.evaluate_and_maybe_alert`
     exatamente uma vez por jogo em direto com odds disponíveis;
+  - `run_live_pipeline()` chama também
+    `GoalImminentDetector.evaluate_and_maybe_alert` exatamente uma vez por
+    jogo, com o MESMO MatchSnapshot já usado pelo Alerta Live Premium
+    (nenhum dos dois recalcula nada — ver
+    `tests/test_goal_imminent_detector.py` para os 12 critérios em si);
   - a odd real já obtida do `odds_provider` é reutilizada (via
     `match_data["live_odd_over"]`) em vez de cair no odd de fallback;
   - `LiveAlertMonitor.sync_active_matches` é chamado com os match_ids dos
     jogos atualmente em direto (para limpar jogos terminados).
 
-Não recalcula nem reavalia os 8 critérios do alerta aqui (isso já está
-coberto por `tests/test_live_premium_alerts.py`) — usa um
-`LiveMLPredictor` falso (sem carregar nenhum modelo real) só para manter
-o teste rápido e determinístico.
+Não recalcula nem reavalia os critérios de nenhum dos dois alertas aqui
+(isso já está coberto por `tests/test_live_premium_alerts.py` e
+`tests/test_goal_imminent_detector.py`) — usa um `LiveMLPredictor` falso
+(sem carregar nenhum modelo real) só para manter o teste rápido e
+determinístico.
 """
 
 import unittest
@@ -50,6 +57,7 @@ def _fake_live_event(match_id=42):
 
 class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
 
+    @patch("src.engine.live_monitor.GoalImminentDetector")
     @patch("src.engine.live_monitor.LiveAlertMonitor")
     @patch("src.engine.live_monitor.LiveMLPredictor")
     @patch("src.engine.live_monitor.APIOddsProvider")
@@ -66,6 +74,7 @@ class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
         MockOddsProviderClass,
         MockMLPredictorClass,
         MockAlertMonitorClass,
+        MockGoalImminentDetectorClass,
     ):
         from src.engine.live_monitor import run_live_pipeline
 
@@ -87,6 +96,9 @@ class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
         mock_alert_monitor = MockAlertMonitorClass.return_value
         mock_alert_monitor.evaluate_and_maybe_alert.return_value = MagicMock(sent=False)
 
+        mock_goal_imminent_detector = MockGoalImminentDetectorClass.return_value
+        mock_goal_imminent_detector.evaluate_and_maybe_alert.return_value = MagicMock(sent=False)
+
         run_live_pipeline()
 
         mock_alert_monitor.sync_active_matches.assert_called_once()
@@ -101,6 +113,14 @@ class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
         self.assertEqual(snapshot_arg["card"]["home_team"], "Benfica")
         self.assertEqual(snapshot_arg["card"]["away_team"], "Sporting")
 
+        # Goal Imminent Detection é avaliado exatamente uma vez, com o
+        # MESMO objeto de snapshot já usado pelo Alerta Live Premium —
+        # nenhum dos dois recalcula nada.
+        mock_goal_imminent_detector.evaluate_and_maybe_alert.assert_called_once()
+        (goal_imminent_snapshot_arg,), _ = mock_goal_imminent_detector.evaluate_and_maybe_alert.call_args
+        self.assertIs(goal_imminent_snapshot_arg, snapshot_arg)
+
+    @patch("src.engine.live_monitor.GoalImminentDetector")
     @patch("src.engine.live_monitor.LiveAlertMonitor")
     @patch("src.engine.live_monitor.LiveMLPredictor")
     @patch("src.engine.live_monitor.APIOddsProvider")
@@ -113,6 +133,7 @@ class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
         MockOddsProviderClass,
         MockMLPredictorClass,
         MockAlertMonitorClass,
+        MockGoalImminentDetectorClass,
     ):
         from src.engine.live_monitor import run_live_pipeline
 
@@ -127,11 +148,13 @@ class TestLiveMonitorCallsPremiumAlertMonitor(unittest.TestCase):
         MockOddsProviderClass.side_effect = Exception("sem chave de odds configurada")
         MockMLPredictorClass.return_value = FakeMLPredictor()
         mock_alert_monitor = MockAlertMonitorClass.return_value
+        mock_goal_imminent_detector = MockGoalImminentDetectorClass.return_value
 
         run_live_pipeline()
 
         mock_alert_monitor.evaluate_and_maybe_alert.assert_not_called()
         mock_alert_monitor.sync_active_matches.assert_called_once()
+        mock_goal_imminent_detector.evaluate_and_maybe_alert.assert_not_called()
 
 
 if __name__ == "__main__":

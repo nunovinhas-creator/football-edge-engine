@@ -38,6 +38,7 @@ from src.report.dashboard_data import (
     get_bsd_status,
     get_ml_status,
     get_telegram_status,
+    load_goal_imminent_alerts,
     load_live_alerts,
     load_live_history,
     load_value_alerts,
@@ -144,6 +145,23 @@ st.markdown(
         border-top: 1px solid rgba(124,58,237,0.3); padding-top: 10px; margin-top: 4px;
     }
     .fhv-criteria li { margin-bottom: 4px; }
+    /* ---------------------------------------------------------------
+       🚨 Goal Imminent Alerts — identidade visual PRÓPRIA (laranja/fogo,
+       #ff7043), deliberadamente distinta do "🚨 Live Alert Monitor"
+       (sem CSS dedicado, verde #1DB954 herdado do tema base) para nunca
+       serem confundidos — mesmo critério já usado para distinguir o
+       painel "📈 Validação Histórica" (roxo) do Backtesting (verde).
+       --------------------------------------------------------------- */
+    .gid-section {
+        background: linear-gradient(180deg, rgba(255,112,67,0.12), rgba(255,112,67,0.03));
+        border: 2px solid rgba(255,112,67,0.5);
+        border-radius: 18px;
+        padding: 22px 24px;
+        margin-top: 20px;
+        margin-bottom: 18px;
+    }
+    .gid-title { font-size: 1.6rem; font-weight: 900; color: #ff7043; margin-bottom: 4px; }
+    .gid-subtitle { opacity: 0.85; font-size: 0.88rem; margin-bottom: 14px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -197,6 +215,11 @@ def _load_alerts_df():
 @st.cache_data(ttl=15, show_spinner=False)
 def _load_premium_alerts_df():
     return load_live_alerts()
+
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _load_goal_imminent_alerts_df():
+    return load_goal_imminent_alerts()
 
 
 goal_engine = _load_goal_engine()
@@ -254,8 +277,8 @@ st.divider()
 # Navegação principal
 # ---------------------------------------------------------------------------
 
-tab_live, tab_backtest, tab_history, tab_premium_alerts = st.tabs(
-    ["🔥 Monitor ao Vivo", "📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor"]
+tab_live, tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
+    ["🔥 Monitor ao Vivo", "📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor", "🚨 Goal Imminent Alerts"]
 )
 
 
@@ -878,3 +901,65 @@ with tab_premium_alerts:
     premium_alerts_today = count_alerts_sent_today()
 
     render_live_alert_monitor_panel(premium_rows, premium_alerts_df, premium_alerts_today)
+
+
+# ---------------------------------------------------------------------------
+# 🚨 Tab: Goal Imminent Alerts (novo painel — não substitui nenhum
+# existente, identidade visual própria, ver CSS `.gid-*` acima).
+# Camada de observação independente do motor de apostas
+# (`src.alerts.goal_imminent_detector`) — este separador só apresenta o
+# histórico já registado em `data/goal_imminent_alerts.db`; a decisão e o
+# envio reais acontecem no monitor automático
+# (`src/engine/live_monitor.py`), nunca aqui.
+# ---------------------------------------------------------------------------
+
+with tab_goal_imminent:
+    st.markdown('<div class="gid-section">', unsafe_allow_html=True)
+    st.markdown('<div class="gid-title">🚨 Goal Imminent Alerts</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="gid-subtitle">Goal Imminent Detection '
+        "(<code>src.alerts.goal_imminent_detector</code>): camada de observação "
+        "independente do motor de apostas — deteta quando existe uma probabilidade "
+        "excecionalmente elevada de golo iminente (12 critérios, todos mais exigentes "
+        "que o Alerta Live Premium: Goal Engine ≥80%, Monte Carlo ≥75%, ML ≥70%, "
+        "Decisão = 🟢 APOSTAR AGORA, Edge ≥5%, EV &gt;0%, Kelly &gt;0%, Consenso = "
+        "Muito Forte, Pressão Alta/Muito Alta, ataques perigosos e remates à baliza "
+        "elevados, jogo ainda não terminado). No máximo UM alerta deste tipo por jogo.</div>",
+        unsafe_allow_html=True,
+    )
+
+    goal_imminent_df = _load_goal_imminent_alerts_df()
+
+    total_goal_imminent_alerts = len(goal_imminent_df)
+    telegram_sent_count = (
+        int(goal_imminent_df["telegram_sent"].sum())
+        if "telegram_sent" in goal_imminent_df.columns and not goal_imminent_df.empty
+        else 0
+    )
+
+    col_gid1, col_gid2 = st.columns(2)
+    with col_gid1:
+        st.metric("🚨 Alertas Goal Imminent (histórico)", total_goal_imminent_alerts)
+    with col_gid2:
+        st.metric("📲 Enviados ao Telegram", telegram_sent_count)
+
+    if goal_imminent_df.empty:
+        st.info("Ainda não foi enviado nenhum Alerta Goal Imminent.")
+    else:
+        table_df = goal_imminent_df.copy()
+        table_df["Jogo"] = table_df["home_team"].astype(str) + " vs " + table_df["away_team"].astype(str)
+
+        display_cols = [
+            c for c in [
+                "created_at", "Jogo", "minute",
+                "goal_engine_probability", "monte_carlo_probability", "ml_probability",
+                "consensus", "market_odd", "outcome", "telegram_sent",
+            ]
+            if c in table_df.columns
+        ]
+        st.dataframe(table_df[display_cols], use_container_width=True, hide_index=True)
+
+        with st.expander("🧾 Histórico completo (data/goal_imminent_alerts.db)"):
+            st.dataframe(goal_imminent_df, use_container_width=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)

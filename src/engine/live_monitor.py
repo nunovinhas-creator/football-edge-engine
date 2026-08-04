@@ -21,7 +21,8 @@ from src.models.live_state import LiveMatchState
 from src.backtest.logger import init_db, log_snapshot
 from src.model.ml_predictor import LiveMLPredictor
 from src.report.dashboard_data import build_match_snapshot
-from src.alerts.live_premium_alerts import AlertOutcome, LiveAlertMonitor
+from src.alerts.live_premium_alerts import LiveAlertMonitor
+from src.alerts.goal_imminent_detector import GoalImminentDetector
 
 
 def build_premium_snapshot(
@@ -33,12 +34,13 @@ def build_premium_snapshot(
 ) -> dict:
     """
     Constrói o MatchSnapshot oficial (`build_match_snapshot`) usado pelo
-    Alerta Live Premium, reutilizando a odd real já obtida pelo chamador
-    (`bookie_odd`) em vez de deixar `build_match_snapshot` cair no
-    fallback `DEFAULT_BOOKIE_ODD`. Não decide nem envia nada — apenas
-    monta o snapshot, para ser reutilizado tanto por `evaluate_premium_alert`
-    como por `src.alerts.live_scanner` (que precisa do snapshot antes de
-    decidir se sequer tenta o envio).
+    Alerta Live Premium e pelo Goal Imminent Detection, reutilizando a
+    odd real já obtida pelo chamador (`bookie_odd`) em vez de deixar
+    `build_match_snapshot` cair no fallback `DEFAULT_BOOKIE_ODD`. Não
+    decide nem envia nada — apenas monta o snapshot, para ser reutilizado
+    por `run_live_pipeline` (Alerta Live Premium + Goal Imminent
+    Detection) e por `src.alerts.live_scanner` (que precisa do snapshot
+    antes de decidir se sequer tenta o envio).
     """
     match_data["live_odd_over"] = bookie_odd
     return build_match_snapshot(
@@ -46,29 +48,6 @@ def build_premium_snapshot(
         ml_predictor=ml_predictor,
         goal_engine=engine,
     )
-
-
-def evaluate_premium_alert(
-    match_data: dict,
-    bookie_odd: float,
-    *,
-    ml_predictor: LiveMLPredictor,
-    engine: LiveGoalEngine,
-    alert_monitor: LiveAlertMonitor,
-    now=None,
-) -> AlertOutcome:
-    """
-    Fluxo do Alerta Live Premium para um único jogo: constrói o snapshot
-    (`build_premium_snapshot`) e delega a decisão/anti-spam/envio a
-    `LiveAlertMonitor.evaluate_and_maybe_alert` (critérios inalterados).
-
-    Extraído de `run_live_pipeline` para ser reutilizado por
-    `src.alerts.live_scanner` sem duplicar esta lógica.
-    """
-    premium_snapshot = build_premium_snapshot(
-        match_data, bookie_odd, ml_predictor=ml_predictor, engine=engine
-    )
-    return alert_monitor.evaluate_and_maybe_alert(premium_snapshot, now=now)
 
 
 def run_live_pipeline():
@@ -90,6 +69,7 @@ def run_live_pipeline():
     engine = LiveGoalEngine()
     ml_predictor = LiveMLPredictor()
     alert_monitor = LiveAlertMonitor()
+    goal_imminent_detector = GoalImminentDetector()
     events = fetcher.get_live_events()
 
     if not events:
@@ -199,17 +179,26 @@ def run_live_pipeline():
                 ):
                     print(f"📲 Alerta +EV enviado para {home} vs {away}.")
 
+                # Snapshot construído UMA única vez e reutilizado tanto
+                # pelo Alerta Live Premium como pelo Goal Imminent
+                # Detection — nenhum dos dois recalcula nada, só leem
+                # este mesmo MatchSnapshot.
+                premium_snapshot = build_premium_snapshot(
+                    match_data, bookie_odd, ml_predictor=ml_predictor, engine=engine
+                )
+
                 # Alerta Live Premium (só quando os 8 critérios oficiais
                 # estão reunidos — ver src.alerts.live_premium_alerts).
-                outcome = evaluate_premium_alert(
-                    match_data,
-                    bookie_odd,
-                    ml_predictor=ml_predictor,
-                    engine=engine,
-                    alert_monitor=alert_monitor,
-                )
+                outcome = alert_monitor.evaluate_and_maybe_alert(premium_snapshot)
                 if outcome.sent:
                     print(f"🔥 Alerta Live Premium enviado para {home} vs {away}.")
+
+                # Goal Imminent Detection (12 critérios, independente do
+                # motor de apostas — ver src.alerts.goal_imminent_detector).
+                # No máximo um alerta deste tipo por jogo.
+                goal_imminent_outcome = goal_imminent_detector.evaluate_and_maybe_alert(premium_snapshot)
+                if goal_imminent_outcome.sent:
+                    print(f"🚨 Alerta Goal Imminent enviado para {home} vs {away}.")
             except Exception as e:
                 print(f"⚠️ Não foi possível avaliar valor/odds para match_id={match_data.get('match_id')}: {e}")
 

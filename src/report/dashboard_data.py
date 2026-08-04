@@ -50,6 +50,7 @@ from src.alerts.live_premium_alerts import (
     DEFAULT_ALERTS_DB_PATH,
     evaluate_alert_criteria,
 )
+from src.alerts.goal_imminent_detector import DEFAULT_GOAL_IMMINENT_DB_PATH
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEMO_BACKTEST_DATASET = REPO_ROOT / "examples" / "backtest" / "sample_real_games.csv"
@@ -655,3 +656,24 @@ def build_live_alert_monitor_rows(snapshots: List[Dict[str, Any]]) -> List[Dict[
         )
 
     return rows
+
+
+# ---------------------------------------------------------------------------
+# 🚨 Goal Imminent Alerts (lê o mesmo `data/goal_imminent_alerts.db` já
+# escrito por `src.alerts.goal_imminent_detector.GoalImminentDetector` —
+# não escreve, não decide, não envia nenhum alerta a partir daqui. Painel
+# novo, independente do "🚨 Live Alert Monitor" acima — não o substitui.)
+# ---------------------------------------------------------------------------
+
+def load_goal_imminent_alerts(limit: int = 200) -> pd.DataFrame:
+    if not os.path.exists(DEFAULT_GOAL_IMMINENT_DB_PATH):
+        return pd.DataFrame()
+    conn = sqlite3.connect(DEFAULT_GOAL_IMMINENT_DB_PATH)
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM goal_imminent_alerts ORDER BY id DESC LIMIT ?", conn, params=(limit,)
+        )
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
