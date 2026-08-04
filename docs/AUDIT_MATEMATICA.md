@@ -1601,3 +1601,156 @@ banca menor, e portanto **drawdown máximo esperado menor ou igual** ao
 de Kelly fixo, nos períodos/segmentos em que o modelo está a operar com
 menos confiança (amostra pequena e/ou tier fraco), sem alterar quais
 apostas são colocadas nem o seu Edge/EV.
+
+---
+
+## 22. Remoção do overround antes do cálculo de Edge/EV (Melhoria #7)
+
+**Data:** 2026-08-04. Âmbito: `src/engine/edge.py`, `src/engine/market.py`,
+`src/cli/predict.py`, `tests/test_edge.py`, `tests/test_overround.py`.
+Endereça o achado de §6.4: *"o sistema nunca remove o overround ... antes
+de calcular edge — o que significa que o 'edge' calculado contra qualquer
+mercado individual já está a comparar a probabilidade do modelo contra
+uma probabilidade de mercado inflacionada pela margem"*.
+
+### 22.1 Diagnóstico
+
+`implied_probability(odd) = 1/odd` é a probabilidade implícita de **uma
+odd isolada** — inclui sempre a margem da casa (overround), porque a
+soma das probabilidades implícitas de todas as opções de um mercado
+(ex. as 3 odds de um 1X2) é sistematicamente > 1.0 (tipicamente 1.02 a
+1.10 em mercados líquidos). `calculate_edge()` usava sempre esta
+probabilidade "suja" (com margem) como referência de mercado — nunca a
+probabilidade "fair" (sem margem) que se obtém normalizando as
+probabilidades implícitas de todas as opções do mercado para somarem
+1.0. Isto tornava sistematicamente mais difícil "ter edge" do que
+deveria (barra artificialmente mais alta), sem que essa fosse uma
+decisão de design documentada.
+
+`calculate_ev(prob_model, odd_house) = prob_model * odd_house - 1` **não
+usa `implied_probability` em nenhum ponto da sua fórmula** — depende
+apenas da probabilidade do próprio modelo e da odd real paga pela casa.
+Por isso, e como já registado em §6.1/§11 com confiança "Alto", a
+correção matemática da fórmula de EV em si **não é afetada** pela
+remoção do overround: o EV de apostar a `odd_house` com uma
+probabilidade `prob_model` é o mesmo, quer o overround seja ou não
+removido de outras odds do mesmo mercado.
+
+### 22.2 Método escolhido para remover o overround
+
+Normalização proporcional das probabilidades implícitas (o método básico
+e mais comum, também usado por `src/backtest/market.py` na direção
+inversa — ver §6.5):
+
+```
+overround            = Σ implied_probability(odd_i), para todas as opções i do mercado
+fair_probability(i)  = implied_probability(odd_i) / overround
+```
+
+Implementado como função única e reutilizável, `remove_overround()`
+(`src/engine/edge.py`), que aceita as odds de um mercado como `dict`
+(`outcome -> odd`) ou lista, preservando a forma recebida e devolvendo
+`None` quando há menos de 2 odds válidas (`odd > 1.0`) — sinal explícito
+para o chamador manter o comportamento anterior.
+
+### 22.3 Alterações a `calculate_edge()`/`calculate_ev()`
+
+Ambas passaram a aceitar um terceiro parâmetro **opcional**,
+`market_odds` (todas as odds do mesmo mercado, incluindo `odd_house`):
+
+- `calculate_edge(prob_model, odd_house, market_odds=None)`: quando
+  `market_odds` tem pelo menos 2 odds válidas (incluindo `odd_house`), o
+  overround é removido via `remove_overround()` e a probabilidade fair
+  resultante substitui `implied_probability(odd_house)` no cálculo do
+  edge. Caso contrário (parâmetro omitido, odds insuficientes, ou
+  `odd_house` ausente do conjunto), o resultado é **exatamente** o
+  mesmo de antes desta melhoria.
+- `calculate_ev(prob_model, odd_house, market_odds=None)`: aceita o
+  mesmo parâmetro, por simetria de interface com `calculate_edge()` (para
+  que um chamador com o mercado completo o possa passar a ambas as
+  funções sem tratamento especial), mas **não o usa** no cálculo — o
+  valor devolvido é idêntico com ou sem `market_odds` (ver §22.1 e
+  `tests/test_overround.py::TestCalculateEvUnaffectedByOverroundRemoval`).
+
+Nenhuma assinatura existente foi quebrada: quem continua a chamar
+`calculate_edge(prob_model, odd_house)`/`calculate_ev(prob_model,
+odd_house)` com dois argumentos posicionais obtém o comportamento
+anterior, sem alterações.
+
+### 22.4 Módulos que passam a reutilizar `market_odds`
+
+- **`src/engine/market.py::analyze_market()`**: já recebia, por
+  definição, o conjunto completo das odds de um mercado (`odds: dict`)
+  — passa agora esse mesmo dict como `market_odds` a `calculate_edge()`/
+  `calculate_ev()`, para os 3 tipos de mercado cobertos pelos testes
+  (1X2, Over/Under, BTTS — a função é agnóstica ao tipo de mercado, só
+  processa o dict de odds recebido). O campo `"market_probability"`
+  devolvido mantém-se **inalterado** (probabilidade implícita simples,
+  com margem) para não quebrar consumidores existentes desse campo
+  (`src/report/printer.py`, `src/engine/report.py`); só o campo `"edge"`
+  passa a refletir a probabilidade fair quando há mercado suficiente.
+- **`src/cli/predict.py::run_predict()`** (caminho ativo de `main.py
+  predict`): já tinha, por jogo, as 3 odds HOME/DRAW/AWAY disponíveis em
+  `match.odds` — passa a construir `market_odds_1x2` a partir dessas
+  mesmas odds (sem nenhuma chamada HTTP nova) e a passá-lo a
+  `calculate_edge()`/`calculate_ev()` para cada um dos 3 mercados.
+
+Nenhum outro módulo foi alterado: `src/engine/decision.py`
+(`DecisionEngine`, usado em `main.py live`), `src/engine/live_decision.py`,
+`src/engine/bet_engine.py`, `src/engine/analyzer.py`,
+`src/backtest/historical/evaluator.py` e `src/engine/kelly.py` continuam
+a chamar `calculate_edge`/`calculate_ev` com dois argumentos (sem
+`market_odds`), porque não têm — nesses caminhos — o conjunto completo
+de odds do mesmo mercado disponível de forma trivial (ex. `HistoricalBet`
+só guarda a odd da aposta efetivamente registada, não as odds das outras
+opções do mesmo mercado nesse jogo). Continuam, portanto, a produzir
+exatamente os mesmos números de sempre — Dixon-Coles, Monte Carlo, Goal
+Engine, Machine Learning, Kelly, Dashboard e os critérios de seleção de
+apostas (thresholds de decisão) não foram tocados por esta melhoria.
+
+### 22.5 Testes adicionados
+
+`tests/test_overround.py` (34 testes) + 2 testes atualizados em
+`tests/test_edge.py`:
+
+- `remove_overround()`: soma das probabilidades fair = 1.0; probabilidade
+  fair sempre menor que a implícita quando há margem; preserva a forma
+  (dict/lista) e as chaves recebidas; `None` com 0 ou 1 odds válidas
+  (ausência de odds suficientes);
+- mercado 1X2 (3 odds, margem ~6%) com valores calculados à mão;
+- mercado Over/Under (2 odds simétricas) — probabilidades fair exatas de
+  0.5/0.5;
+- mercado BTTS (Sim/Não) com valores calculados à mão;
+- overround elevado (~20%) vs. overround baixo (~2%): a mesma
+  probabilidade fair subjacente (0.5) produz o mesmo edge fair
+  independentemente da margem, enquanto o edge antigo (sem remoção)
+  varia com a margem — demonstra o efeito concreto da correção;
+- ausência de odds suficientes: `market_odds` omitido, vazio, com uma só
+  odd válida, ou sem a `odd_house` no conjunto — todos caem no fallback
+  documentado (comportamento idêntico ao anterior);
+- retrocompatibilidade: chamadas de 2 argumentos reproduzem exatamente os
+  fixtures pré-existentes (`edge=0.0738`, `ev=0.155` para `p=0.55,
+  odd=2.10`); validações de erro (`ValueError`/sentinela `-1.0`)
+  inalteradas;
+- regressão: `DecisionEngine`, `evaluate_live_market`, `bet_engine`,
+  `analyzer.analyze_bet` e `Kelly` continuam a produzir os mesmos valores
+  de sempre (não passam `market_odds`);
+- `analyze_market()` e `run_predict()`: edge por mercado (1X2/O-U/BTTS)
+  coincide com `calculate_edge(..., market_odds=...)`; EV inalterado;
+  `market_probability` inalterado; mercado de 1 outcome cai no fallback.
+
+### 22.6 Testes e impacto
+
+`python -m pytest tests/` — 606 testes, 0 falhas (563 já existentes + 43
+novos: 34 em `tests/test_overround.py`, mais 9 provenientes da expansão
+das classes de teste já existentes em `tests/test_edge.py`). Impacto
+esperado: para mercados com pelo menos 2 odds válidas disponíveis em
+simultâneo (1X2 completo no `main.py predict`, ou qualquer mercado
+passado a `analyze_market()`), o Edge calculado passa a ser
+sistematicamente **maior ou igual** ao anterior (a probabilidade fair é
+sempre ≤ probabilidade implícita com margem), reduzindo a barra
+artificial identificada em §6.4 e tornando o Edge mais fiel à
+probabilidade real de mercado — sem alterar o EV, o Kelly, a Decision
+Engine, o Dashboard, ou qualquer critério de seleção de apostas em
+produção (`main.py live` continua a não passar `market_odds`, logo
+continua byte-a-byte igual a antes desta melhoria).

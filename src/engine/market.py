@@ -22,6 +22,15 @@ def analyze_market(
     espera uma odd decimal (> 1.0). Como quase toda a probabilidade é
     <= 1.0, o edge devolvido era sistematicamente -1.0. A chamada correta
     passa a própria odd (`odd`), tal como já acontecia para `calculate_ev`.
+
+    Remoção do overround (Melhoria #7 da auditoria matemática): `odds` já
+    é, por definição desta função, o conjunto completo das opções de um
+    mesmo mercado (ex. as 3 odds de um 1X2, ou as 2 odds de um Over/Under
+    ou BTTS) — exatamente o que `calculate_edge()` precisa como
+    `market_odds` para remover o overround e usar a probabilidade fair em
+    vez da implícita. `market_probability` mantém-se a probabilidade
+    implícita simples (com margem), inalterada, para não quebrar
+    consumidores existentes deste campo.
     """
 
     analysis = {}
@@ -36,13 +45,15 @@ def analyze_market(
 
         edge = calculate_edge(
             model_probability,
-            odd
+            odd,
+            market_odds=odds
         )
 
 
         ev = calculate_ev(
             model_probability,
-            odd
+            odd,
+            market_odds=odds
         )
 
 

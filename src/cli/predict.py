@@ -44,6 +44,18 @@ def run_predict():
 
     for match in matches:
 
+        # Conjunto completo das odds 1X2 já disponíveis para este jogo
+        # (Melhoria #7 da auditoria matemática — remoção do overround):
+        # usado como `market_odds` abaixo para que Edge seja calculado
+        # contra a probabilidade "fair" (sem margem) sempre que houver
+        # pelo menos 2 odds válidas entre HOME/DRAW/AWAY. Não faz novas
+        # chamadas HTTP nem introduz odds novas — reaproveita `match.odds`.
+        market_odds_1x2 = {
+            m: match.odds[m]
+            for m in ("HOME", "DRAW", "AWAY")
+            if match.odds.get(m) is not None and match.odds[m] > 1.0
+        }
+
         for market, odd in match.odds.items():
 
             if market not in [
@@ -82,7 +94,8 @@ def run_predict():
             edge = round(
                 calculate_edge(
                     model_probability_fraction,
-                    odd
+                    odd,
+                    market_odds=market_odds_1x2
                 ) * 100,
                 2
             )
@@ -90,7 +103,8 @@ def run_predict():
             ev = round(
                 calculate_ev(
                     model_probability_fraction,
-                    odd
+                    odd,
+                    market_odds=market_odds_1x2
                 ) * 100,
                 2
             )

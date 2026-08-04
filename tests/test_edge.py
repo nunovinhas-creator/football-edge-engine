@@ -159,11 +159,25 @@ class TestMarketBugFix(unittest.TestCase):
         edges = [outcome["edge"] for outcome in result.values()]
         self.assertFalse(all(e == -1.0 for e in edges))
 
-    def test_edge_matches_official_formula(self):
+    def test_edge_matches_official_formula_with_overround_removed(self):
+        # Melhoria #7 (auditoria matemática): analyze_market() já tem, por
+        # definição, o conjunto completo das odds do mercado — passa-o a
+        # calculate_edge() como `market_odds`, pelo que o edge devolvido
+        # usa a probabilidade FAIR (sem margem), não a implícita simples.
         result = analyze_market(self.odds, self.model_probability)
         for outcome_name, odd in self.odds.items():
-            expected = calculate_edge(self.model_probability, odd)
+            expected = calculate_edge(
+                self.model_probability, odd, market_odds=self.odds
+            )
             self.assertEqual(result[outcome_name]["edge"], expected)
+
+    def test_edge_differs_from_pre_overround_removal_value(self):
+        # Confirma que a remoção do overround tem, de facto, efeito prático
+        # neste mercado (3 odds válidas -> overround > 1.0).
+        result = analyze_market(self.odds, self.model_probability)
+        for outcome_name, odd in self.odds.items():
+            old_style_edge = calculate_edge(self.model_probability, odd)
+            self.assertNotEqual(result[outcome_name]["edge"], old_style_edge)
 
     def test_ev_untouched_and_correct(self):
         result = analyze_market(self.odds, self.model_probability)
