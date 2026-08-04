@@ -251,48 +251,79 @@ a `load_historical_dataset`.
 
 ## Limitações
 
-1. **Forma exata de `/events/{id}/odds/`, `/events/{id}/odds/comparison/`
-   e `/events/{id}/stats/` não documentada.** `schema.yaml` (a
-   especificação OpenAPI oficial incluída no repositório) marca estes
-   três endpoints como `"No response body"` — só a descrição textual está
-   documentada (ex. "Consensus decimal odds. Markets: 1X2, Over/Under
-   {1.5,2.5,3.5}, BTTS."; "Outcome keys are codes (HOME/DRAW/AWAY/
-   over/under/...), not team names ... Bookmaker keys are slugs."). O
-   `normalizer.py` assume, com base nessas descrições, uma forma
-   plausível e faz extração defensiva por múltiplos aliases; qualquer
-   campo fora do esperado é preservado (não descartado) nas colunas
-   `extra_*`. **Recomendação:** ao ligar a uma chave de API real pela
-   primeira vez, validar um punhado de respostas reais destes três
-   endpoints e ajustar `normalizer.py` se a forma real divergir do
-   assumido.
-2. **Coluna `bookmaker` é `"consensus"`, não um bookmaker específico**,
+1. **Forma real de `/events/{id}/odds/` e `/events/{id}/stats/` —
+   confirmada e corrigida.** `schema.yaml` marca estes endpoints (e
+   `/events/{id}/odds/comparison/`) como `"No response body"`; a forma
+   exata foi confirmada por auditoria com dados reais de produção (ver
+   ponto 2 abaixo) e por código de produção já existente
+   (`src/cli/live.py`, `scripts/live_scanner.py`,
+   `research/pressure_shots/build_raw_table.py`). Ambos os endpoints
+   devolvem o payload **embrulhado sob a chave do próprio recurso**:
+   - `/events/{id}/odds/` → `{"event_id": ..., "odds": {"home_win": ...,
+     "draw": ..., "away_win": ..., "over_15_goals": ..., "under_15_goals":
+     ..., "over_25_goals": ..., "under_25_goals": ..., "over_35_goals":
+     ..., "under_35_goals": ..., "btts_yes": ..., "btts_no": ...}}`;
+   - `/events/{id}/stats/` → `{"stats": {"home": {...}, "away": {...}},
+     ...outros campos ao nível do jogo (shotmap, momentum, average
+     positions, per-minute xG)}`.
+
+   `normalizer._unwrap_resource` desembrulha esta camada antes de extrair
+   os campos, mantendo compatibilidade com a forma já desembrulhada
+   (datasets/testes anteriores a esta correção). `/events/{id}/odds/comparison/`
+   **não** tem este invólucro adicional — a forma documentada em
+   `schema.yaml` (`{"markets": {...}}`) foi confirmada correta tal como
+   estava.
+2. **Odds históricas só cobrem a época mais recente/em curso — confirmado
+   com dados reais, não é um bug do builder.** Auditoria de produção
+   (competição `id=8`, "UEFA Europa League", execução real via
+   `build_historical_dataset.yml`): de 301 jogos obtidos, 271 pertencem a
+   uma época já terminada (`season_id=280`, "25/26") e 30 à época em curso
+   (`season_id=1269`, "26/27"). Para os 271 jogos da época terminada,
+   `/events/{id}/odds/` devolve sempre a estrutura completa do mercado com
+   **todos os 11 valores a `null`** (ex. `{"odds": {"home_win": null,
+   "draw": null, ..., "btts_no": null}}`), enquanto os 30 jogos da época em
+   curso têm valores reais nos 11 campos — cobertura de 0% vs. 100%.
+   Confirmado por inspeção linha-a-linha de `extra_odds` (payload bruto
+   preservado): zero casos em que `extra_odds` contém um valor real mas a
+   coluna normalizada correspondente (`odds_home`/`odds_draw`/`odds_away`)
+   ficou `None` — o normalizer está a interpretar corretamente o `null`
+   devolvido pela API. É uma limitação de dados da própria BSD API,
+   consistente com o mesmo padrão de janela temporal já documentado para
+   outro tipo de dado desta API (`research/pressure_shots/README.md`:
+   `dangerous_attack`/`attack`/`ball_safe` só existem a partir de
+   ~2026-04-24, sem histórico retroativo). **Recomendação:** não esperar
+   cobertura de odds para épocas já concluídas; para backtesting histórico
+   de odds, restringir a `--season-id` da época em curso/mais recente de
+   cada competição, ou confirmar previamente junto da BSD API se existem
+   odds arquivadas para a liga/época em causa.
+3. **Coluna `bookmaker` é `"consensus"`, não um bookmaker específico**,
    porque `/events/{id}/odds/` devolve odds de consenso (agregadas), não
    por casa de apostas. Para saber quais bookmakers estão por trás desse
    consenso, ativar `--odds-comparison` (`include_odds_comparison=True`),
    que preenche `bookmakers_available` a partir de
    `/events/{id}/odds/comparison/` — mas isto duplica os pedidos HTTP por
    jogo (mais um pedido cada), pelo que fica desligado por omissão.
-3. **Limite de pedidos por minuto/segundo da BSD API não documentado.**
+4. **Limite de pedidos por minuto/segundo da BSD API não documentado.**
    `schema.yaml` não define nenhum `X-RateLimit-*` nem limite explícito.
    O `RateLimiter` deste módulo (por omissão 5 pedidos/segundo) é uma
    salvaguarda proativa e configurável do lado do cliente, não uma cópia
    do limite real — se a API responder 429 mesmo assim, `get_with_retry`
    já trata isso como falha transitória com backoff exponencial.
-4. **Checkpoint ao nível de época, não ao nível de página.** Se o
+5. **Checkpoint ao nível de época, não ao nível de página.** Se o
    processo for interrompido a meio de uma época muito longa, o resume
    salta jogos já marcados individualmente como concluídos
    (`processed_events.log`), mas repete a paginação de `/events/` para
    essa época a partir do início (custo: alguns pedidos de listagem
    redundantes, não pedidos de odds/stats já feitos).
-5. **`extra_match_stats` pode incluir estruturas grandes** (shotmap,
+6. **`extra_match_stats` pode incluir estruturas grandes** (shotmap,
    momentum, average positions, per-minute xG) como JSON serializado numa
    única célula — adequado para CSV/SQLite/Parquet, mas não pensado para
    ser lido/filtrado eficientemente a partir daí; para análise dessas
    estruturas, considerar tratamento dedicado fora deste builder.
-6. **Não há normalização de fuso horário além do que a API já devolve**
+7. **Não há normalização de fuso horário além do que a API já devolve**
    (`event_date` é ISO 8601 UTC, conforme `EventDetailV2Schema`); nenhuma
    conversão adicional é feita.
-7. **Este módulo não calcula probabilidade de modelo.** Como exigido, não
+8. **Este módulo não calcula probabilidade de modelo.** Como exigido, não
    invoca Dixon-Coles, Monte Carlo, ML, etc. — `backtest_bridge.py` exige
    explicitamente que `model_prob` seja fornecido por quem chama.
 
@@ -314,7 +345,10 @@ nenhum pedido de rede real):
   personalizada.
 - `test_normalizer.py` — mapeamento de `EventDetailV2Schema`, várias
   formas plausíveis de odds/stats, preservação de campos desconhecidos em
-  `extra_*`, ausência de odds/stats não falha.
+  `extra_*`, ausência de odds/stats não falha, forma real embrulhada
+  (`{"odds": {...}}` / `{"stats": {...}}`) confirmada em produção (ver
+  "Limitações", ponto 1) e retrocompatibilidade com a forma já
+  desembrulhada.
 - `test_builder.py` — percurso completo com cliente falso em memória,
   deduplicação, checkpoint/resume (incluindo retomar a meio de uma
   época), falhas parciais de odds/stats não abortam o pipeline,
