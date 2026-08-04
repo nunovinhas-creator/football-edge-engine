@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from src.collector.client import EventCollector
 
 from src.engine.edge import (
@@ -11,6 +13,7 @@ from src.engine.stake import calculate_stake
 from src.engine.explanation import generate_explanation
 from src.engine.ranking import create_ranking
 from src.report.printer import print_report
+from src.utils.telegram_notifier import send_telegram_alert
 
 
 # Mapa entre o nome de mercado usado por match.odds ("HOME"/"DRAW"/"AWAY")
@@ -235,3 +238,52 @@ def run_predict():
 
     for bet in ranking["value_bets"]:
         print_report(bet)
+
+    send_telegram_bulletin(ranking["value_bets"])
+
+
+def decision_alert_label(decision: str) -> str:
+    """Traduz o texto de decisão já calculado (make_decision) num rótulo
+    de alerta. Não recalcula nem altera a decisão em si."""
+
+    if "BET" in decision:
+        return "🟢 APOSTAR"
+    if "WAIT" in decision:
+        return "🟡 AGUARDAR"
+    return "⚪ PASSAR"
+
+
+def format_bet_alert(bet: dict, now: datetime) -> str:
+    edge_sign = "+" if bet["edge"] > 0 else ""
+    ev_sign = "+" if bet["ev"] > 0 else ""
+
+    return (
+        f"{decision_alert_label(bet['decision'])}\n\n"
+        f"{bet['match']}\n\n"
+        f"Mercado:\n{bet['market']}\n\n"
+        f"Probabilidade:\n{bet['model_probability']}%\n\n"
+        f"Odd:\n{bet['odd']}\n\n"
+        f"Edge:\n{edge_sign}{bet['edge']}%\n\n"
+        f"EV:\n{ev_sign}{bet['ev']}%\n\n"
+        f"Stake:\n{bet['stake']}%\n\n"
+        f"Hora:\n{now.strftime('%H:%M')}"
+    )
+
+
+def send_telegram_bulletin(value_bets, max_alerts: int = 5) -> None:
+    """Envia o boletim diário para o Telegram: um alerta por oportunidade
+    aprovada (`ranking["value_bets"]`, já calculado por create_ranking/
+    is_valid_bet — sem alterar essa lógica de decisão), ou uma mensagem
+    informativa quando não há nenhuma oportunidade nesta ronda."""
+
+    now = datetime.now()
+
+    if not value_bets:
+        send_telegram_alert(
+            f"ℹ️ Análise concluída ({now.strftime('%d/%m/%Y %H:%M')}).\n"
+            "Nenhuma oportunidade cumpriu os critérios de EV+ nesta ronda."
+        )
+        return
+
+    for bet in value_bets[:max_alerts]:
+        send_telegram_alert(format_bet_alert(bet, now))

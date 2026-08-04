@@ -294,7 +294,8 @@ class TestRunPredictUsesDixonColesPerMarket(unittest.TestCase):
         import src.cli.predict as predict_module
 
         with patch.object(predict_module, "EventCollector") as MockCollector, \
-             patch.object(predict_module, "create_ranking") as mock_create_ranking:
+             patch.object(predict_module, "create_ranking") as mock_create_ranking, \
+             patch.object(predict_module, "send_telegram_alert") as mock_send_telegram:
 
             MockCollector.return_value.get_matches.return_value = [self._make_match()]
             mock_create_ranking.return_value = {"value_bets": [], "watchlist": []}
@@ -303,6 +304,7 @@ class TestRunPredictUsesDixonColesPerMarket(unittest.TestCase):
 
             results = mock_create_ranking.call_args[0][0]
 
+        mock_send_telegram.assert_called_once()
         by_market = {r["market"]: r["model_probability"] for r in results}
 
         self.assertEqual(by_market["HOME"], 55.0)
@@ -322,7 +324,8 @@ class TestRunPredictUsesDixonColesPerMarket(unittest.TestCase):
         )
 
         with patch.object(predict_module, "EventCollector") as MockCollector, \
-             patch.object(predict_module, "create_ranking") as mock_create_ranking:
+             patch.object(predict_module, "create_ranking") as mock_create_ranking, \
+             patch.object(predict_module, "send_telegram_alert"):
 
             MockCollector.return_value.get_matches.return_value = [match]
             mock_create_ranking.return_value = {"value_bets": [], "watchlist": []}
