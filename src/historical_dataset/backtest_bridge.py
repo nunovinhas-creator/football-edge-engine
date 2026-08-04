@@ -17,7 +17,11 @@ from typing import Any, Callable, Dict, Optional, Union
 
 import pandas as pd
 
-from src.engine.lambda_estimator import estimate_lambda
+from src.engine.lambda_estimator import (
+    classify_model_confidence,
+    estimate_lambda,
+    estimate_lambda_detailed,
+)
 from src.engine.team_strength import estimate_team_strength_priors
 from src.engine.value import estimate_pregame_probabilities
 from src.historical_dataset.storage import to_dataframe
@@ -89,6 +93,9 @@ def to_backtest_frame(
     model_prob: ValueSource,
     engine_decision: Optional[ValueSource] = None,
     result: Optional[ValueSource] = None,
+    model_confidence: Optional[ValueSource] = None,
+    lambda_tier: Optional[ValueSource] = None,
+    effective_sample_size: Optional[ValueSource] = None,
 ) -> pd.DataFrame:
     """
     Converte o dataset normalizado num DataFrame pronto para
@@ -104,6 +111,13 @@ def to_backtest_frame(
     devolvido: `load_historical_dataset` já os preenche automaticamente a
     partir de `home_goals`/`away_goals` e da odd/probabilidade fornecidas,
     sem que este módulo tenha de repetir essa lógica.
+
+    `model_confidence`, `lambda_tier` e `effective_sample_size` (Melhoria
+    #8 da auditoria matemática): OPCIONAIS, mesmo mecanismo de resolução
+    que `model_prob` — tipicamente alimentados por
+    `lambda_confidence_from_dixon_coles(records)`. Se omitidos, ficam de
+    fora do DataFrame devolvido (retrocompatível: `HistoricalBet` já trata
+    a sua ausência sem erro).
     """
     df = to_dataframe(records)
     if df.empty:
@@ -139,6 +153,18 @@ def to_backtest_frame(
     resolved_result = _resolve(result, df)
     if resolved_result is not None:
         out["result"] = resolved_result
+
+    resolved_model_confidence = _resolve(model_confidence, df)
+    if resolved_model_confidence is not None:
+        out["model_confidence"] = resolved_model_confidence
+
+    resolved_lambda_tier = _resolve(lambda_tier, df)
+    if resolved_lambda_tier is not None:
+        out["lambda_tier"] = resolved_lambda_tier
+
+    resolved_effective_sample_size = _resolve(effective_sample_size, df)
+    if resolved_effective_sample_size is not None:
+        out["effective_sample_size"] = resolved_effective_sample_size
 
     # Jogos sem odd publicada para este mercado (ou sem resultado final
     # conhecido) não podem ser avaliados; descarta-los aqui em vez de
@@ -274,3 +300,48 @@ def model_probabilities_from_dixon_coles(records) -> Dict[Any, Dict[str, float]]
         lambda_home, mu_away = estimate_lambda(h2h)
         probabilities[row["event_id"]] = estimate_pregame_probabilities(lambda_home, mu_away)
     return probabilities
+
+
+def lambda_confidence_from_dixon_coles(records) -> Dict[Any, Dict[str, Any]]:
+    """
+    Melhoria #8 (auditoria matemática): propaga a confiança do estimador de
+    lambda (`src.engine.lambda_estimator.LambdaEstimate.tier` e
+    `.effective_sample_size`) até ao Evaluation Framework, para cada jogo
+    do dataset normalizado — mesmo `head_to_head` derivado por `derive_h2h`
+    usado por `model_probabilities_from_dixon_coles` (nenhuma fuga de
+    informação nova), mas devolvendo a PROVENIÊNCIA da estimativa em vez
+    do par (lambda_home, mu_away).
+
+    Não recalcula nem substitui o Dixon-Coles, o estimador de lambda, nem
+    `model_probabilities_from_dixon_coles`: esta função só chama
+    `estimate_lambda_detailed` (em vez de `estimate_lambda`) sobre o mesmo
+    input, para obter os campos de proveniência que `estimate_lambda` já
+    descartava. `model_prob` continua a vir exclusivamente de
+    `model_probabilities_from_dixon_coles` — o resultado desta função serve
+    apenas como METADADO opcional de avaliação (ver
+    `to_backtest_frame(..., lambda_tier=..., effective_sample_size=...,
+    model_confidence=...)`), nunca como input de Kelly/Edge/EV/Decision
+    Engine.
+
+    Devolve `{event_id: {"lambda_tier": str, "effective_sample_size": float,
+    "model_confidence": str}}`.
+    """
+    df = to_dataframe(records)
+    if df.empty:
+        return {}
+
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+    confidence: Dict[Any, Dict[str, Any]] = {}
+    for _, row in df.iterrows():
+        h2h = derive_h2h(df, row["home_team"], row["away_team"], row["date"])
+        estimate = estimate_lambda_detailed(h2h)
+        confidence[row["event_id"]] = {
+            "lambda_tier": estimate.tier,
+            "effective_sample_size": estimate.effective_sample_size,
+            "model_confidence": classify_model_confidence(
+                estimate.tier, estimate.effective_sample_size
+            ),
+        }
+    return confidence

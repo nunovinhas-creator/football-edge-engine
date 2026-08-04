@@ -409,3 +409,57 @@ def estimate_lambda(h2h: Optional[Dict[str, Any]]) -> Tuple[float, float]:
     no docstring do módulo.
     """
     return estimate_lambda_detailed(h2h).as_tuple()
+
+
+# --------------------------------------------------------------------------
+# Melhoria #8 (auditoria matemática): rótulo de confiança para o Framework
+# de Avaliação (`src.evaluation`, `src.historical_dataset.backtest_bridge`).
+# --------------------------------------------------------------------------
+# `classify_model_confidence` NÃO é usada por nenhuma fórmula do motor
+# (Dixon-Coles, Monte Carlo, Kelly, Edge, EV, Decision Engine) nem altera
+# `lambda_home`/`mu_away` — é só uma categorização de
+# `LambdaEstimate.tier` + `.effective_sample_size`, calculada depois da
+# estimativa já estar pronta, usada exclusivamente para segmentar
+# resultados de backtest por nível de confiança real do modelo (ver
+# `src.evaluation.segments.segment_by_model_confidence`). Reutiliza o
+# mesmo `SHRINKAGE_K` já definido acima como referência de "amostra
+# suficiente para dominar o prior" — não introduz nenhuma constante nova
+# sem justificação.
+_STRONG_TIERS = ("recent_matches", "h2h_goal_totals")
+
+
+def classify_model_confidence(tier: str, effective_sample_size: float) -> str:
+    """
+    Classifica a confiança do modelo em "HIGH" / "MEDIUM" / "LOW",
+    combinando o nível de informação usado na cascata (`tier`) com a
+    dimensão de amostra efetiva que a sustenta (`effective_sample_size`):
+
+        - "avg_total_goals_or_prior" (Nível C/D, sem repartição empírica
+          por equipa observada) nunca é classificado como "HIGH".
+        - amostra efetiva >= 2*SHRINKAGE_K: domina claramente o prior no
+          encolhimento (`_shrink_to_prior`) -- "HIGH" se também vier de um
+          tier forte, "MEDIUM" caso contrário.
+        - amostra efetiva >= SHRINKAGE_K: prior e amostra pesam
+          aproximadamente o mesmo -- "MEDIUM".
+        - amostra efetiva >= SHRINKAGE_K/2 e tier forte -- "MEDIUM".
+        - abaixo disso: o prior de liga ainda domina a estimativa -- "LOW".
+
+    Nunca lança exceção (entradas inválidas/negativas são tratadas como
+    amostra zero). Uso exclusivo do Framework de Avaliação.
+    """
+    try:
+        sample = float(effective_sample_size)
+    except (TypeError, ValueError):
+        sample = 0.0
+    if sample != sample or sample < 0:  # NaN ou negativo
+        sample = 0.0
+
+    strong_tier = tier in _STRONG_TIERS
+
+    if sample >= 2 * SHRINKAGE_K and strong_tier:
+        return "HIGH"
+    if sample >= SHRINKAGE_K:
+        return "MEDIUM"
+    if sample >= SHRINKAGE_K / 2 and strong_tier:
+        return "MEDIUM"
+    return "LOW"

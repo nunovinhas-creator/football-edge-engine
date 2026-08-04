@@ -32,6 +32,7 @@ from src.backtest.historical.staking import FlatStake, StakingStrategy
 
 from . import plots as plots_module
 from .formatting import dataframe_to_markdown
+from .segments import all_confidence_segments as _all_confidence_segments
 from .segments import all_segments as _all_segments
 
 __all__ = ["EvaluationReport", "evaluate"]
@@ -89,6 +90,15 @@ class EvaluationReport:
         for name in ("by_month", "by_confidence_range"):
             if name in segments:
                 extra_segments[name] = segments[name]
+
+        # Melhoria #8 (auditoria matemática): segmentos por confiança REAL
+        # do modelo (lambda_tier / effective_sample_size / model_confidence)
+        # — calculados sobre `all_bets` (não só `placed_bets`), porque
+        # combinam métricas financeiras com Brier Score/Log Loss. Omitidos
+        # automaticamente quando o metadado não está disponível
+        # (retrocompatibilidade com dados de antes desta melhoria).
+        extra_segments.update(_all_confidence_segments(report.all_bets))
+
         return cls(backtest_report=report, extra_segments=extra_segments, starting_bankroll=starting_bankroll)
 
     # ------------------------------------------------------------------

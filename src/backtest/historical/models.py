@@ -35,6 +35,20 @@ class HistoricalBet:
                           para fins de segmentação — não é usado em nenhum
                           cálculo de edge/EV/kelly.
         extra:            quaisquer outros metadados livres.
+
+    Campos opcionais de confiança do modelo (Melhoria #8 da auditoria
+    matemática — propagação de `src.engine.lambda_estimator.LambdaEstimate`
+    até ao Evaluation Framework, só para efeitos de avaliação/segmentação;
+    nunca usados em nenhum cálculo de edge/EV/kelly nem em nenhuma decisão
+    do motor):
+        model_confidence: rótulo "HIGH"/"MEDIUM"/"LOW" (ver
+                          `src.engine.lambda_estimator.classify_model_confidence`).
+        lambda_tier:      `LambdaEstimate.tier` — proveniência da estimativa
+                          de lambda ("recent_matches" | "h2h_goal_totals" |
+                          "avg_total_goals_or_prior").
+        effective_sample_size: `LambdaEstimate.effective_sample_size`.
+        Todos opcionais e retrocompatíveis: ficheiros/registos antigos que
+        não os tragam continuam válidos (ficam a `None`, sem erro).
     """
 
     match: str
@@ -49,6 +63,9 @@ class HistoricalBet:
     away_team: Optional[str] = None
     home_or_away: Optional[str] = None
     is_favorite: Optional[bool] = None
+    model_confidence: Optional[str] = None
+    lambda_tier: Optional[str] = None
+    effective_sample_size: Optional[float] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
     @staticmethod
@@ -102,11 +119,22 @@ class HistoricalBet:
             "away_team": ("away_team", "equipa_visitante", "visitante", "fora", "away"),
             "home_or_away": ("home_or_away", "casa_fora", "venue"),
             "is_favorite": ("is_favorite", "favorito"),
+            "model_confidence": ("model_confidence", "confianca_modelo"),
+            "lambda_tier": ("lambda_tier", "nivel_confianca_lambda"),
+            "effective_sample_size": ("effective_sample_size", "amostra_efetiva"),
         }
+
+        def _is_missing(value: Any) -> bool:
+            """None, ou NaN (colunas opcionais ausentes num DataFrame/CSV)."""
+            if value is None:
+                return True
+            if isinstance(value, float) and value != value:
+                return True
+            return False
 
         def pick(field_name: str, required: bool = True) -> Any:
             for key in aliases[field_name]:
-                if key in row and row[key] is not None:
+                if key in row and not _is_missing(row[key]):
                     return row[key]
             if required:
                 raise KeyError(
@@ -130,6 +158,8 @@ class HistoricalBet:
                     "ou em alternativa 'home_team'+'away_team')"
                 )
 
+        raw_effective_sample_size = pick("effective_sample_size", required=False)
+
         return cls(
             match=match_value,
             date=pick("date"),
@@ -143,6 +173,11 @@ class HistoricalBet:
             away_team=away_team,
             home_or_away=pick("home_or_away", required=False),
             is_favorite=pick("is_favorite", required=False),
+            model_confidence=pick("model_confidence", required=False),
+            lambda_tier=pick("lambda_tier", required=False),
+            effective_sample_size=(
+                float(raw_effective_sample_size) if raw_effective_sample_size is not None else None
+            ),
             extra=extra,
         )
 
@@ -183,6 +218,15 @@ class EvaluatedBet:
     home_team: Optional[str] = None
     away_team: Optional[str] = None
 
+    # Melhoria #8 (auditoria matemática): metadados opcionais de confiança
+    # do modelo, propagados de `HistoricalBet` sem qualquer alteração —
+    # nunca usados nos cálculos acima (probability/edge/ev/kelly/stake),
+    # só para segmentação no Evaluation Framework (ver
+    # `src.evaluation.segments`).
+    model_confidence: Optional[str] = None
+    lambda_tier: Optional[str] = None
+    effective_sample_size: Optional[float] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "match": self.match,
@@ -205,4 +249,7 @@ class EvaluatedBet:
             "won": self.won,
             "result": "WIN" if self.won else "LOSS",
             "profit": self.profit,
+            "model_confidence": self.model_confidence,
+            "lambda_tier": self.lambda_tier,
+            "effective_sample_size": self.effective_sample_size,
         }

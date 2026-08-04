@@ -138,6 +138,20 @@ todas as dimensões pedidas:
 mais os segmentos adicionais herdados do Backtesting Framework:
 `by_ev_range`, `by_favorite_vs_underdog`, `by_home_away`.
 
+**Confiança REAL do modelo (Melhoria #8, `docs/AUDIT_MATEMATICA.md` §20):**
+quando o dataset traz os metadados opcionais `lambda_tier` /
+`effective_sample_size` / `model_confidence` (propagados de
+`LambdaEstimate`, via `src.historical_dataset.backtest_bridge.lambda_confidence_from_dixon_coles`
++ `to_backtest_frame`), aparecem mais três segmentos —
+`by_lambda_tier`, `by_effective_sample_size_range`,
+`by_model_confidence` — cada um combinando ROI/Yield/Nº de apostas
+(sobre as apostas colocadas do grupo) com Brier Score/Log Loss (sobre
+todas as apostas avaliadas do grupo). Distinto de `by_confidence_range`
+acima: aquele mede quão provável o modelo achou a SELEÇÃO apostada;
+estes medem quanta INFORMAÇÃO sustentava a estimativa de λ que produziu
+essa probabilidade. Omitidos automaticamente (sem erro) quando o dataset
+não traz o metadado — ex. `examples/backtest/sample_real_games.csv`.
+
 **Nota sobre "confiança":** o dataset de backtest não tem um campo de
 confiança separado da probabilidade — `probability` (a probabilidade que
 o modelo atribuiu à seleção apostada, já produzida pelo motor) é o único

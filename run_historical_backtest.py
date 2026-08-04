@@ -45,6 +45,7 @@ from src.backtest.historical.staking import FlatStake, KellyStake
 from src.backtest.historical.dataset import load_historical_dataset
 from src.evaluation.report import evaluate
 from src.historical_dataset.backtest_bridge import (
+    lambda_confidence_from_dixon_coles,
     model_probabilities_from_dixon_coles,
     to_backtest_frame,
 )
@@ -114,12 +115,18 @@ def main() -> None:
     print("A calcular probabilidades do modelo (Dixon-Coles em produção, head-to-head derivado do próprio dataset)...")
     probabilities = model_probabilities_from_dixon_coles(records)
 
+    print("A calcular a confiança do modelo (LambdaEstimate.tier / effective_sample_size — Melhoria #8)...")
+    confidence = lambda_confidence_from_dixon_coles(records)
+
     frames = []
     for market in markets:
         prob_key = MARKET_TO_PROB_KEY[market]
         frame = to_backtest_frame(
             records, market=market,
             model_prob=lambda row, key=prob_key: probabilities.get(row["event_id"], {}).get(key),
+            lambda_tier=lambda row: confidence.get(row["event_id"], {}).get("lambda_tier"),
+            effective_sample_size=lambda row: confidence.get(row["event_id"], {}).get("effective_sample_size"),
+            model_confidence=lambda row: confidence.get(row["event_id"], {}).get("model_confidence"),
         )
         frames.append(frame)
 
@@ -160,6 +167,17 @@ def main() -> None:
     print(f"Log Loss: {sm['log_loss']}")
     print(f"Calibration Error (ECE): {sm['calibration_error']}")
     print(f"Max Drawdown: {gm['max_drawdown']} ({gm['max_drawdown_pct']}%)")
+
+    print("\n=== Desempenho por nível de confiança do modelo (Melhoria #8) ===")
+    tier_table = report.all_segment_tables().get("by_lambda_tier")
+    if tier_table is not None and not tier_table.empty:
+        print(
+            tier_table[
+                ["lambda_tier", "n_bets", "roi_pct", "yield_pct", "brier_score", "log_loss"]
+            ].to_string(index=False)
+        )
+    else:
+        print("Sem apostas com lambda_tier disponível (dataset sem esse metadado).")
 
     output_dir = args.output_dir
     csv_paths = report.to_csv(output_dir)

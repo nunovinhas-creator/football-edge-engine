@@ -1308,3 +1308,117 @@ predominantemente o prior de liga; ver §19.4.
   para 22).
 - `docs/04_backtesting_framework.md`: nova secção com o exemplo real e a
   tabela de resultados desta execução.
+
+---
+
+## 20. Propagação da confiança do modelo até ao Evaluation Framework (Melhoria #8)
+
+**Data:** 2026-08-04. Âmbito: o `LambdaEstimate` já produzido por
+`src.engine.lambda_estimator.estimate_lambda_detailed` (Melhoria #5, §
+anterior deste documento) já continha `tier` e `effective_sample_size` —
+mas nenhum consumidor de produção usava a versão "detalhada": tanto
+`src.collector.client` (jogos futuros) como
+`src.historical_dataset.backtest_bridge.model_probabilities_from_dixon_coles`
+(backtest) só chamavam `estimate_lambda(h2h) -> (lambda_home, mu_away)`,
+descartando a proveniência da estimativa. Essa informação morria em
+`LambdaEstimate` e nunca chegava a `HistoricalBet` nem ao Framework de
+Avaliação (`src.evaluation`), impedindo medir o desempenho por nível real
+de confiança do modelo (só era possível segmentar por `probability` — a
+confiança na SELEÇÃO apostada, não na estimativa de λ que a produziu).
+**Nenhuma fórmula do Dixon-Coles, Monte Carlo, Kelly, Edge, EV, Goal
+Engine, Machine Learning ou Decision Engine foi alterada** — mesma
+disciplina de âmbito das secções 15-19; esta melhoria é estritamente
+aditiva (metadados opcionais).
+
+### 20.1 O que foi acrescentado
+
+- **`src/engine/lambda_estimator.py`**: `classify_model_confidence(tier,
+  effective_sample_size) -> "HIGH"|"MEDIUM"|"LOW"` (novo). Categoriza a
+  proveniência da estimativa reutilizando o mesmo `SHRINKAGE_K` já
+  definido para o encolhimento estatístico (nenhuma constante nova sem
+  justificação). Nunca é chamada pelo motor de decisão nem influencia
+  `lambda_home`/`mu_away`.
+- **`src/historical_dataset/backtest_bridge.py`**:
+  `lambda_confidence_from_dixon_coles(records)` (novo) — espelha
+  `model_probabilities_from_dixon_coles` (mesmo `derive_h2h`, sem fuga de
+  informação nova) mas chama `estimate_lambda_detailed` em vez de
+  `estimate_lambda`, devolvendo `{event_id: {"lambda_tier",
+  "effective_sample_size", "model_confidence"}}`. `to_backtest_frame`
+  ganhou três parâmetros opcionais (`lambda_tier`,
+  `effective_sample_size`, `model_confidence`, mesmo mecanismo de
+  resolução que `model_prob`) — omitidos, o DataFrame devolvido fica
+  exatamente como antes (retrocompatível).
+- **`src/backtest/historical/models.py`**: `HistoricalBet` e
+  `EvaluatedBet` ganharam os três campos opcionais (`model_confidence`,
+  `lambda_tier`, `effective_sample_size`, todos `None` por omissão).
+  `HistoricalBet.from_dict` aceita-os por alias (PT/EN) e trata `NaN`
+  como ausência (não como dado) — um CSV/DataFrame sem estas colunas
+  continua a validar exatamente como antes.
+- **`src/backtest/historical/evaluator.py`**: `evaluate_bet` passa estes
+  três campos de `HistoricalBet` para `EvaluatedBet` sem os tocar —
+  nunca entram no cálculo de `probability`/`edge`/`ev`/`kelly`/`stake`.
+- **`src/evaluation/segments.py`**: três segmentos novos —
+  `segment_by_lambda_tier`, `segment_by_model_confidence`,
+  `segment_by_effective_sample_size_range` (bins `0-2 | 2-4 | 4-8 | 8-15 |
+  15+`, à volta de `SHRINKAGE_K=4`) — e `all_confidence_segments`, que os
+  agrega. Ao contrário dos segmentos "clássicos" (só financeiro, sobre
+  `placed_bets`), estes combinam ROI/Yield/Nº de apostas (sobre as
+  apostas colocadas de cada grupo) com Brier Score/Log Loss (sobre TODAS
+  as apostas avaliadas desse grupo — mesma convenção de
+  `evaluation.metrics.full_summary`), porque precisam de `all_bets`.
+  Grupos sem o metadado disponível são omitidos, nunca geram erro.
+- **`src/evaluation/report.py`**: `EvaluationReport.from_backtest_report`
+  passou a incluir `all_confidence_segments(report.all_bets)` em
+  `extra_segments` — os três segmentos novos aparecem automaticamente em
+  TODAS as exportações já existentes (CSV, Excel, HTML, Markdown), sem
+  qualquer alteração a essas funções de exportação.
+- **`run_historical_backtest.py`**: passou a calcular
+  `lambda_confidence_from_dixon_coles(records)` a par de
+  `model_probabilities_from_dixon_coles`, a alimentar
+  `to_backtest_frame(...)` com os três metadados, e a imprimir a tabela
+  `by_lambda_tier` (ROI/Yield/Brier/Log Loss/Nº de apostas por tier).
+
+### 20.2 Retrocompatibilidade
+
+- `HistoricalBet.from_dict` sobre um dict/linha sem estes campos devolve
+  os três atributos a `None`, sem erro (`tests/test_confidence_propagation.py::TestHistoricalBetConfidenceFields`).
+  `NaN` (coluna presente num DataFrame mas vazia nessa linha) é tratado
+  da mesma forma que ausência.
+- `EvaluatedBet.to_dict()` emite sempre as três chaves (a `None` quando
+  não fornecidas) — a coluna existe no DataFrame de `all_bets`/`placed_bets`
+  produzido por `evaluate_bets`, mas fica vazia; os segmentos novos
+  detetam isso e omitem-se automaticamente (`all_confidence_segments`
+  devolve `{}` quando não há nenhum valor não-nulo).
+- `examples/backtest/sample_real_games.csv` (sem estas colunas) e o
+  dataset sintético de `tests.backtest.fixtures.generate_sample_dataset`
+  continuam a produzir exatamente os mesmos `global_metrics`/
+  `statistical_metrics` de sempre — `python run_backtest.py --demo`
+  produz o mesmo resumo (ROI 53.33%, N=3 apostas colocadas) que antes
+  desta melhoria.
+
+### 20.3 Testes adicionados
+
+`tests/test_confidence_propagation.py` (39 testes): `classify_model_confidence`
+(bandas HIGH/MEDIUM/LOW, incluindo amostra `None`/`NaN`/negativa);
+retrocompatibilidade de `HistoricalBet`/`EvaluatedBet`; propagação ponta a
+ponta (`lambda_confidence_from_dixon_coles` → `to_backtest_frame` →
+`load_historical_dataset` → `BacktestEngine` → `EvaluationReport`);
+segmentação correta por `lambda_tier`/`model_confidence`/faixa de
+`effective_sample_size` (financeiro só sobre colocadas, estatístico sobre
+todas as avaliadas do grupo, valores calculados à mão); e ausência de
+regressões (dataset sintético de 80 jogos e o CSV de exemplo legado
+continuam a produzir os mesmos `global_metrics`/`statistical_metrics` e
+não geram os segmentos novos, por não terem o metadado).
+
+### 20.4 Testes e impacto
+
+`python -m pytest tests/` — 525 testes, 0 falhas (486 já existentes + 39
+novos). `python run_backtest.py --demo` produz exatamente o mesmo
+resumo de sempre (ROI 53.33%, N=3 apostas colocadas, §19.4) — confirma
+que nada no Backtesting Framework original foi alterado. Impacto
+esperado: nenhuma mudança de valor em nenhuma métrica/decisão já
+existente (ROI, Yield, Brier, Log Loss, Edge, EV, Kelly, decisão do
+motor); o único efeito observável é a disponibilidade de três colunas
+opcionais (`model_confidence`, `lambda_tier`, `effective_sample_size`) e
+de três segmentos novos no Framework de Avaliação, ambos vazios/ausentes
+sempre que a fonte de dados não fornece o metadado.

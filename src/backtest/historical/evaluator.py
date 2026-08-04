@@ -74,6 +74,9 @@ def evaluate_bet(bet: HistoricalBet, staking: Optional[StakingStrategy] = None) 
         placed=placed,
         won=won,
         profit=round(profit, 4),
+        model_confidence=bet.model_confidence,
+        lambda_tier=bet.lambda_tier,
+        effective_sample_size=bet.effective_sample_size,
     )
 
 
