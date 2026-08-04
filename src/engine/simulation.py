@@ -15,25 +15,31 @@ class MonteCarloSimulator:
         self.n_simulations = n_simulations
 
     def run_match_simulation(
-        self, 
-        current_minute: int, 
-        current_home_score: int, 
-        current_away_score: int, 
-        home_lambda: float, 
-        away_lambda: float
+        self,
+        current_minute: int,
+        current_home_score: int,
+        current_away_score: int,
+        home_lambda: float,
+        away_lambda: float,
+        match_id=None,
     ) -> SimulationResult:
         """
         Simula o restante tempo de jogo usando Distribuição de Poisson + Monte Carlo.
         """
         remaining_ratio = max(0.0, (90.0 - current_minute) / 90.0)
-        
+
         # Ajusta as taxas de golo esperadas para o tempo restante
         rem_home_lambda = home_lambda * remaining_ratio
         rem_away_lambda = away_lambda * remaining_ratio
-        
+
+        # Gerador local, semeado apenas com (match_id, minute) — reprodutível
+        # para o mesmo jogo/minuto sem usar seeds globais (np.random.seed).
+        seed = [int(match_id or 0) % (2**32), int(current_minute) % (2**32)]
+        rng = np.random.default_rng(seed)
+
         # Simulação Monte Carlo (geração de golos via Poisson)
-        simulated_home_goals = np.random.poisson(rem_home_lambda, self.n_simulations)
-        simulated_away_goals = np.random.poisson(rem_away_lambda, self.n_simulations)
+        simulated_home_goals = rng.poisson(rem_home_lambda, self.n_simulations)
+        simulated_away_goals = rng.poisson(rem_away_lambda, self.n_simulations)
         
         final_home = current_home_score + simulated_home_goals
         final_away = current_away_score + simulated_away_goals

@@ -4,13 +4,13 @@ from src.engine.simulation import MonteCarloSimulator
 from src.live.providers.api_match_provider import APIMatchProvider
 from src.live.providers.api_odds_provider import APIOddsProvider
 
-# FALLBACK_LAMBDA_HOME só é usado se o λ_home dinâmico não puder ser
-# calculado (dados ao vivo ausentes/inválidos) — é o valor fixo que o
-# dashboard usava antes de consumir o λ dinâmico (ver
+# FALLBACK_LAMBDA_HOME é devolvido por calculate_dynamic_lambda() sempre que
+# os dados ao vivo estão ausentes/inválidos (para o λ_home OU para o λ_away,
+# já que evaluate() reutiliza a mesma função/fallback para os dois — ver
 # docs/AUDIT_MATEMATICA.md, secção Monte Carlo).
-# FALLBACK_LAMBDA_AWAY mantém-se: não existe, atualmente, um cálculo
-# dinâmico de λ_away no sistema, por isso é sempre este valor fixo (já era
-# o valor usado por esta pipeline antes desta alteração).
+# FALLBACK_LAMBDA_AWAY deixou de ser o valor fixo de λ_away em evaluate()
+# (agora dinâmico, ver evaluate()); mantido apenas como o valor legado
+# documentado para quem ainda o importar.
 FALLBACK_LAMBDA_HOME = 1.6
 FALLBACK_LAMBDA_AWAY = 0.80
 
@@ -77,16 +77,37 @@ class LivePipeline:
             live_result
         )
 
-        # Sem fonte dinâmica de λ_away disponível no sistema atual — usa-se
-        # o fallback fixo documentado no topo do módulo.
-        lambda_away = FALLBACK_LAMBDA_AWAY
+        # λ_away dinâmico: reutiliza exatamente a mesma calculate_dynamic_lambda()
+        # do λ_home, mas alimentada com a métrica ao vivo específica da equipa
+        # visitante disponível em LiveMatchState (away_conceded_xg_last5). A
+        # pressão ao vivo (`pressure`) não é medida separadamente por equipa
+        # neste sistema, pelo que se reutiliza o mesmo valor já calculado pelo
+        # Goal Engine para ambas as chamadas — nenhuma fórmula nova é criada.
+        away_live_result = {
+            "estimated_xg_10m": match_state.away_conceded_xg_last5,
+            "pressure": live_result.get("pressure"),
+        }
+        lambda_away = self.calculate_dynamic_lambda(away_live_result)
+
+        # Cartões vermelhos: LiveMatchState.red_cards é uma contagem agregada
+        # do jogo (a integração BSD atual não distingue, nesta camada, a que
+        # equipa pertence cada cartão). Como simplificação mínima e
+        # documentada, o fator de inferioridade numérica é aplicado ao λ
+        # restante da equipa visitante, sem tocar no Goal Engine nem no
+        # adaptador BSD.
+        if match_state.red_cards > 0:
+            lambda_away = round(
+                lambda_away * max(0.0, 1 - 0.15 * match_state.red_cards),
+                2
+            )
 
         simulation = self.simulator.run_match_simulation(
             current_minute=match_state.minute,
-            current_home_score=0,
-            current_away_score=0,
+            current_home_score=match_state.home_score,
+            current_away_score=match_state.away_score,
             home_lambda=lambda_home,
-            away_lambda=lambda_away
+            away_lambda=lambda_away,
+            match_id=match_id
         )
 
         return {

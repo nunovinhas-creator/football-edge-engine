@@ -118,11 +118,74 @@ class TestEvaluateUsesDynamicLambda(unittest.TestCase):
         # Já não é o valor fixo legado usado antes desta alteração.
         self.assertNotEqual(analysis["lambda"]["home"], 1.6)
 
-    def test_evaluate_uses_documented_away_fallback(self):
-        pipeline = make_pipeline(LiveMatchState(minute=30))
+    def test_evaluate_reports_dynamic_lambda_away(self):
+        match_state = LiveMatchState(
+            minute=30,
+            away_conceded_xg_last5=2.4,
+        )
+        pipeline = make_pipeline(match_state)
+
+        live_result = pipeline.live_engine.predict_next_goal_probability(
+            match_state
+        )
+        expected_lambda_away = pipeline.calculate_dynamic_lambda(
+            {
+                "estimated_xg_10m": match_state.away_conceded_xg_last5,
+                "pressure": live_result.get("pressure"),
+            }
+        )
+
         analysis = pipeline.evaluate(match_id=1)
 
-        self.assertEqual(analysis["lambda"]["away"], FALLBACK_LAMBDA_AWAY)
+        self.assertEqual(analysis["lambda"]["away"], expected_lambda_away)
+        # Já não é o valor fixo legado usado antes desta alteração.
+        self.assertNotEqual(analysis["lambda"]["away"], FALLBACK_LAMBDA_AWAY)
+
+    def test_evaluate_lambda_away_varies_with_away_metrics(self):
+        low = make_pipeline(
+            LiveMatchState(minute=30, away_conceded_xg_last5=0.3)
+        ).evaluate(match_id=1)
+        high = make_pipeline(
+            LiveMatchState(minute=30, away_conceded_xg_last5=3.0)
+        ).evaluate(match_id=1)
+
+        self.assertNotEqual(low["lambda"]["away"], high["lambda"]["away"])
+
+    def test_evaluate_uses_real_match_score(self):
+        match_state = LiveMatchState(minute=70, home_score=2, away_score=1)
+        pipeline = make_pipeline(match_state)
+
+        analysis = pipeline.evaluate(match_id=1)
+
+        # Com 3 golos já marcados no tempo real do jogo, over_15 tem de ser
+        # 100% mesmo que não se marque mais nenhum golo no tempo restante.
+        self.assertEqual(analysis["simulation"]["over_15"], 100.0)
+        self.assertGreaterEqual(analysis["simulation"]["expected_home_goals"], 2.0)
+        self.assertGreaterEqual(analysis["simulation"]["expected_away_goals"], 1.0)
+
+    def test_red_card_reduces_away_lambda_only(self):
+        base_state = LiveMatchState(minute=40, red_cards=0)
+        red_card_state = LiveMatchState(minute=40, red_cards=1)
+
+        base = make_pipeline(base_state).evaluate(match_id=7)
+        with_red_card = make_pipeline(red_card_state).evaluate(match_id=7)
+
+        self.assertEqual(base["lambda"]["home"], with_red_card["lambda"]["home"])
+        self.assertLess(with_red_card["lambda"]["away"], base["lambda"]["away"])
+
+    def test_evaluate_is_reproducible_for_same_match_id_and_minute(self):
+        match_state = LiveMatchState(
+            minute=55,
+            dangerous_attacks_10m=10,
+            shots_10m=6,
+            shots_on_target_10m=3,
+            corners_10m=2,
+        )
+
+        first = make_pipeline(match_state).evaluate(match_id=42)
+        second = make_pipeline(match_state).evaluate(match_id=42)
+
+        self.assertEqual(first["simulation"], second["simulation"])
 
     def test_evaluate_never_fails_even_with_bare_match_state(self):
         # Estado mínimo, sem qualquer sinal de pressão ao vivo.
