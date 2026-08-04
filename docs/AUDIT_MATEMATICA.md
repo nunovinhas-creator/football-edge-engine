@@ -1422,3 +1422,182 @@ motor); o único efeito observável é a disponibilidade de três colunas
 opcionais (`model_confidence`, `lambda_tier`, `effective_sample_size`) e
 de três segmentos novos no Framework de Avaliação, ambos vazios/ausentes
 sempre que a fonte de dados não fornece o metadado.
+
+---
+
+## 21. Kelly fracionário escalado pela confiança do modelo (Melhoria #6)
+
+**Data:** 2026-08-04. Âmbito: §7 desta auditoria identificou três
+implementações independentes de Kelly fracionário (`kelly.py`,
+`dixon_coles.py::calculate_fractional_kelly`,
+`decision.py::DecisionEngine.evaluate_bet`), cada uma com a fórmula de
+Kelly completo recalculada localmente e a mesma fração fixa (0.25, "1/4
+Kelly") hard-coded de forma independente — e notou (§7.5) que "não há, em
+nenhuma das implementações, ajuste de Kelly pela incerteza do modelo,
+apesar de haver informação de confiança disponível". Essa informação
+(`LambdaEstimate.tier`/`.effective_sample_size`, Melhoria #5, já
+propagada até `HistoricalBet`/`EvaluatedBet` pela Melhoria #8) continuava
+sem qualquer efeito no tamanho da aposta. **Nenhuma fórmula de
+Dixon-Coles, Monte Carlo, Goal Engine, Machine Learning, Edge ou EV foi
+alterada, e nenhum critério de seleção de aposta (`min_edge`,
+`engine_decision`, `placed`) foi tocado** — esta melhoria afeta
+exclusivamente a FRAÇÃO de Kelly usada para dimensionar o stake de uma
+aposta já decidida.
+
+### 21.1 O que foi acrescentado
+
+- **`src/engine/kelly.py`**: duas funções novas, chamadas por todas as
+  implementações de Kelly do projeto —
+  `calculate_confidence_multiplier(lambda_tier, effective_sample_size)` e
+  `calculate_adaptive_kelly_fraction(base_fraction, lambda_tier,
+  effective_sample_size)`. Fórmula:
+
+      confidence_multiplier = n_eff / (n_eff + k)
+      k = SHRINKAGE_K * peso_do_tier   (SHRINKAGE_K=4.0, já existente em lambda_estimator.py)
+      adaptive_fraction = base_fraction * confidence_multiplier
+
+  `peso_do_tier` depende apenas do valor (fixo, não de `n_eff`) de
+  `LambdaEstimate.tier`: `recent_matches` (Nível A) -> peso 1 (`k=4`);
+  `h2h_goal_totals` (Nível B) -> peso 2 (`k=8`); `avg_total_goals_or_prior`
+  (Nível C/D, ou qualquer tier desconhecido) -> peso 4 (`k=16`), a mesma
+  hierarquia de qualidade de informação já documentada na cascata de
+  `estimate_lambda_detailed` (§16). Propositadamente **não** reutiliza
+  `classify_model_confidence` (Melhoria #8) para esta escala: essa função
+  tem fronteiras rígidas sobre `effective_sample_size` (muda de rótulo
+  exatamente em `n_eff==8`, `==4`, `==2`), e usá-la introduziria um salto
+  descontínuo do multiplicador exatamente nessas fronteiras — violando o
+  requisito de continuidade. Ao depender só de `lambda_tier` (fixo por
+  estimativa) para escolher `k`, o multiplicador é uma função contínua e
+  suave de `effective_sample_size` em toda a gama.
+
+  A forma `n/(n+k)` é a mesma família já usada em
+  `lambda_estimator.py::_shrink_to_prior` — não introduz uma fórmula nova
+  ao projeto, reaplica-a com o mesmo `SHRINKAGE_K` como referência.
+  Propriedades: contínua e limitada a `[0, 1)` em `n_eff`; `n_eff=0` ->
+  `0` (multiplicador mínimo); `n_eff -> infinito` -> `multiplicador -> 1`
+  (nunca ultrapassa `1`, logo `adaptive_fraction` nunca ultrapassa
+  `base_fraction`); sem `lambda_tier` OU `effective_sample_size`
+  (omissos) -> `multiplicador = 1.0` exatamente, ou seja
+  `adaptive_fraction == base_fraction`.
+
+- **`src/engine/kelly.py::fractional_kelly`**: ganhou dois parâmetros
+  opcionais (`lambda_tier=None`, `effective_sample_size=None`), passados
+  a `calculate_adaptive_kelly_fraction` em vez de usar `fraction`
+  diretamente. Omissos, comportamento idêntico ao de antes.
+
+- **`src/engine/dixon_coles.py::calculate_fractional_kelly`**: deixou de
+  recalcular a fórmula de Kelly completo localmente — passa a chamar
+  `src.engine.kelly.kelly_fraction` e
+  `calculate_adaptive_kelly_fraction`, eliminando a duplicação
+  identificada em §7.2. Ganhou os mesmos dois parâmetros opcionais; o
+  cap explícito (`max_stake_pct`, 2% por omissão) continua aplicado
+  exatamente da mesma forma, sobre o resultado já escalado.
+
+- **`src/engine/decision.py::DecisionEngine.evaluate_bet`**: deixou de
+  recalcular `full_kelly` inline — passa a chamar
+  `src.engine.kelly.kelly_fraction`. Ganhou os mesmos dois parâmetros
+  opcionais, usados para escalar `self.max_kelly_fraction` via
+  `calculate_adaptive_kelly_fraction` antes de multiplicar pelo Kelly
+  completo. O cap explícito de 5% (§7.3) e o critério `edge >= min_edge`
+  continuam exatamente iguais — a confiança nunca decide BET/PASS, só o
+  tamanho do stake quando já é BET.
+
+- **`src/backtest/historical/staking.py::KellyStake.stake_for`** (e a
+  interface `StakingStrategy.stake_for`): ganhou os mesmos dois
+  parâmetros opcionais, repassados a `fractional_kelly`. `FlatStake`
+  ignora-os (stake fixo, por definição independente de Kelly/confiança).
+
+- **`src/backtest/historical/evaluator.py::evaluate_bet`**: passa a
+  propagar `bet.lambda_tier`/`bet.effective_sample_size` (já presentes em
+  `HistoricalBet` desde a Melhoria #8, até agora só usados para
+  segmentação) para `staking.stake_for(...)` — o único efeito é no campo
+  `stake` quando a estratégia usada é `KellyStake`; o campo `kelly`
+  (Kelly completo, sem fração) e `probability`/`edge`/`ev`/
+  `engine_decision`/`placed` não são tocados.
+
+### 21.2 Fórmula — comparação Kelly antigo vs. novo
+
+```
+Antigo (qualquer das três implementações):
+    stake_fraction = kelly_full * base_fraction              (base_fraction fixo, ex. 0.25)
+
+Novo (Melhoria #6):
+    confidence_multiplier = n_eff / (n_eff + k(tier))        (k(tier) in {4, 8, 16})
+    adaptive_fraction      = base_fraction * confidence_multiplier
+    stake_fraction         = kelly_full * adaptive_fraction
+
+Sem metadados de confiança (tier/n_eff == None):
+    confidence_multiplier = 1.0  =>  adaptive_fraction == base_fraction
+    => stake_fraction idêntico ao "Antigo", byte a byte.
+```
+
+Exemplo numérico (`probability=0.55`, `odd=2.10`, `base_fraction=0.25`,
+`kelly_full≈0.1409`): sem metadados, `stake_fraction≈3.52%` da banca
+(igual ao valor antes desta melhoria, `src/tools/test_kelly.py`). Com
+`tier="avg_total_goals_or_prior"` e `n_eff=1` (amostra efetiva muito
+pequena, pior tier): `confidence_multiplier≈0.059`, `stake_fraction≈0.21%`
+— um stake muito mais conservador para uma estimativa pouco confiável.
+Com `tier="recent_matches"` e `n_eff=1 000 000` (amostra efetiva enorme,
+melhor tier): `confidence_multiplier≈0.999996`, `stake_fraction≈3.52%` —
+praticamente indistinguível do Kelly fixo, como esperado (amostra grande
+o suficiente para a confiança deixar de ser o fator limitante).
+
+### 21.3 Retrocompatibilidade
+
+- Todos os parâmetros novos (`lambda_tier`, `effective_sample_size`) são
+  opcionais, com omissão (`None`) por defeito, em toda a cadeia
+  (`kelly.py`, `dixon_coles.py`, `decision.py`, `staking.py`). Nenhuma
+  assinatura pública existente foi quebrada — todas as chamadas
+  existentes no repositório (`bet_engine.py`, `value.py`,
+  `full_engine.py`, `report/dashboard.py`, `backtest/historical/
+  evaluator.py` sem os novos argumentos, etc.) continuam a funcionar sem
+  alteração.
+- Confirmado por teste (`tests/test_adaptive_kelly.py`) e por execução
+  real: `python run_backtest.py --demo` continua a produzir exatamente o
+  mesmo resumo de sempre (ROI 53.33%, N=3 apostas colocadas) — a
+  estratégia de staking por omissão do demo é `FlatStake`, que ignora
+  Kelly por completo, e mesmo a via `KellyStake` produz o valor de
+  sempre quando `HistoricalBet` não traz `lambda_tier`/
+  `effective_sample_size` (caso do dataset de exemplo e do dataset
+  sintético usados nos testes existentes).
+- `src/report/dashboard.py` (produção, `main.py live`) **não foi
+  alterado** — continua a chamar `DecisionEngine.evaluate_bet(market,
+  prob, odd)` sem os novos argumentos, logo continua a produzir
+  exatamente os mesmos stakes de sempre. A escala por confiança só entra
+  em vigor onde um chamador passa `lambda_tier`/`effective_sample_size`
+  explicitamente (atualmente, apenas o Backtesting Framework, via
+  `evaluate_bet`/`KellyStake`).
+
+### 21.4 Testes adicionados
+
+`tests/test_adaptive_kelly.py` (38 testes): multiplicador de confiança
+sem metadados (`None`/NaN/valor inválido -> `1.0`, sem escala);
+`effective_sample_size` muito pequeno vs. elevado; tier
+`recent_matches`/`h2h_goal_totals`/`avg_total_goals_or_prior` (o
+"HIGH"/"MEDIUM"/"LOW" desta melhoria) e a sua ordenação a igual amostra;
+continuidade (varrimento fino de `effective_sample_size`, sem saltos, em
+particular à volta das fronteiras onde `classify_model_confidence`
+mudaria de rótulo); limites (`0 <= adaptive_fraction <= base_fraction`
+sempre); regressão de `fractional_kelly`,
+`dixon_coles.calculate_fractional_kelly`,
+`DecisionEngine.evaluate_bet` e `KellyStake`/`evaluate_bet` do
+Backtesting Framework (valor sem metadados idêntico ao documentado em
+§7); consistência cruzada entre as três implementações (mesmo resultado,
+com e sem metadados); e confirmação de que confiança nunca afeta
+`probability`/`edge`/`ev`/`engine_decision`/`placed`, só `stake`.
+
+### 21.5 Testes e impacto
+
+`python -m pytest tests/` — 563 testes, 0 falhas (525 já existentes + 38
+novos). `python run_backtest.py --demo` produz exatamente o mesmo resumo
+de sempre (ROI 53.33%, N=3 apostas colocadas, §19.4/§20.4). Impacto
+esperado: nenhuma mudança em nenhum caminho de produção existente
+(`main.py live`/`dashboard.py` não alterado); no Backtesting Framework,
+quando `KellyStake` é combinado com apostas que trazem
+`lambda_tier`/`effective_sample_size` (Melhoria #8), o stake de apostas
+de baixa confiança passa a ser automaticamente reduzido (nunca
+aumentado) face ao Kelly fixo — o efeito esperado é uma exposição de
+banca menor, e portanto **drawdown máximo esperado menor ou igual** ao
+de Kelly fixo, nos períodos/segmentos em que o modelo está a operar com
+menos confiança (amostra pequena e/ou tier fraco), sem alterar quais
+apostas são colocadas nem o seu Edge/EV.

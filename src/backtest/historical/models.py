@@ -38,9 +38,14 @@ class HistoricalBet:
 
     Campos opcionais de confiança do modelo (Melhoria #8 da auditoria
     matemática — propagação de `src.engine.lambda_estimator.LambdaEstimate`
-    até ao Evaluation Framework, só para efeitos de avaliação/segmentação;
-    nunca usados em nenhum cálculo de edge/EV/kelly nem em nenhuma decisão
-    do motor):
+    até ao Evaluation Framework, sobretudo para efeitos de avaliação/
+    segmentação; nunca usados no cálculo de `probability`/edge/EV/`kelly`
+    (Kelly completo, sem fração) nem em nenhuma decisão do motor
+    (`engine_decision`/`placed`). Desde a Melhoria #6, `evaluate_bet`
+    passa-os à estratégia de staking (`src.backtest.historical.staking`),
+    que os pode usar para escalar a FRAÇÃO de Kelly pela confiança do
+    modelo — afeta apenas o `stake` de uma aposta já decidida, nunca a
+    decisão em si):
         model_confidence: rótulo "HIGH"/"MEDIUM"/"LOW" (ver
                           `src.engine.lambda_estimator.classify_model_confidence`).
         lambda_tier:      `LambdaEstimate.tier` — proveniência da estimativa
@@ -220,9 +225,11 @@ class EvaluatedBet:
 
     # Melhoria #8 (auditoria matemática): metadados opcionais de confiança
     # do modelo, propagados de `HistoricalBet` sem qualquer alteração —
-    # nunca usados nos cálculos acima (probability/edge/ev/kelly/stake),
-    # só para segmentação no Evaluation Framework (ver
-    # `src.evaluation.segments`).
+    # nunca usados nos cálculos de probability/edge/ev/kelly (Kelly
+    # completo) acima, só para segmentação no Evaluation Framework (ver
+    # `src.evaluation.segments`). Desde a Melhoria #6, podem influenciar
+    # `stake` (não `kelly`) quando a estratégia de staking usada é
+    # `KellyStake` — ver `src.backtest.historical.evaluator.evaluate_bet`.
     model_confidence: Optional[str] = None
     lambda_tier: Optional[str] = None
     effective_sample_size: Optional[float] = None

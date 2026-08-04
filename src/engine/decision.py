@@ -1,6 +1,9 @@
 from dataclasses import dataclass
+from typing import Optional
 
 from src.engine.edge import calculate_edge
+from src.engine.kelly import calculate_adaptive_kelly_fraction
+from src.engine.kelly import kelly_fraction as _kelly_fraction
 
 @dataclass
 class BetRecommendation:
@@ -20,7 +23,23 @@ class DecisionEngine:
         self.max_kelly_fraction = max_kelly_fraction
         self.min_edge = min_edge
 
-    def evaluate_bet(self, market: str, model_prob_pct: float, bookie_odd: float) -> BetRecommendation:
+    def evaluate_bet(
+        self,
+        market: str,
+        model_prob_pct: float,
+        bookie_odd: float,
+        lambda_tier: Optional[str] = None,
+        effective_sample_size: Optional[float] = None,
+    ) -> BetRecommendation:
+        """
+        `lambda_tier`/`effective_sample_size` são opcionais (Melhoria #6 da
+        auditoria matemática — `LambdaEstimate.tier`/`.effective_sample_size`
+        já produzidos por `src.engine.lambda_estimator`): quando fornecidos,
+        escalam `max_kelly_fraction` pela confiança do modelo. Omissos, o
+        resultado é exatamente igual ao de antes desta melhoria. Não afeta
+        `edge` nem o critério BET/PASS (`min_edge`) — só o tamanho do stake
+        de uma aposta já decidida.
+        """
         p = model_prob_pct / 100.0
         q = 1.0 - p
         b = bookie_odd - 1.0
@@ -31,12 +50,17 @@ class DecisionEngine:
         # Edge (%) — usa a implementação oficial e única de Edge (src/engine/edge.py)
         edge = calculate_edge(p, bookie_odd) * 100.0
 
-        # Kelly Criterion: f* = (b*p - q) / b
-        full_kelly = (b * p - q) / b
-        
-        # Aplica Fractional Kelly e limites de segurança
+        # Kelly Criterion: f* = (b*p - q) / b — reutiliza a implementação
+        # oficial e única (src/engine/kelly.py), não recalcula a fórmula.
+        full_kelly = _kelly_fraction(p, bookie_odd)
+
+        # Aplica Fractional Kelly (escalada pela confiança, se disponível — Melhoria #6)
+        # e limites de segurança
         if full_kelly > 0 and edge >= self.min_edge:
-            suggested_stake = min(full_kelly * self.max_kelly_fraction * 100.0, 5.0)  # teto máximo de 5% da banca
+            adaptive_fraction = calculate_adaptive_kelly_fraction(
+                self.max_kelly_fraction, lambda_tier, effective_sample_size
+            )
+            suggested_stake = min(full_kelly * adaptive_fraction * 100.0, 5.0)  # teto máximo de 5% da banca
             action = "BET 🔥"
         else:
             suggested_stake = 0.0

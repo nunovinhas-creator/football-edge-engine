@@ -48,7 +48,18 @@ def evaluate_bet(bet: HistoricalBet, staking: Optional[StakingStrategy] = None) 
     ev = calculate_ev(probability, bet.odd)
     kelly = kelly_fraction(probability, bet.odd)
 
-    stake = staking.stake_for(probability, bet.odd)
+    # Melhoria #6: propaga os metadados de confiança já disponíveis em
+    # `HistoricalBet` (Melhoria #8) para a estratégia de staking — só
+    # `KellyStake` os usa (para escalar a fração de Kelly pela confiança);
+    # `FlatStake` e outras estratégias ignoram-nos. `probability`/`edge`/
+    # `ev`/`kelly` acima e `engine_decision`/`placed` abaixo não são
+    # afetados.
+    stake = staking.stake_for(
+        probability,
+        bet.odd,
+        lambda_tier=bet.lambda_tier,
+        effective_sample_size=bet.effective_sample_size,
+    )
     won = bet.won
     profit = stake * (bet.odd - 1.0) if won else -stake
 

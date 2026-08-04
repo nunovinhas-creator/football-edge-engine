@@ -5,9 +5,18 @@ Estas estratégias apenas decidem QUANTO apostar (fração da banca ou stake
 fixo). Não recalculam Edge, EV ou Kelly — reutilizam sempre
 `src.engine.kelly.kelly_fraction` / `fractional_kelly` para a fração de
 Kelly, mantendo uma única fonte de verdade matemática.
+
+Melhoria #6 (auditoria matemática): `KellyStake.stake_for` aceita agora,
+opcionalmente, `lambda_tier`/`effective_sample_size`
+(`LambdaEstimate.tier`/`.effective_sample_size`, já disponíveis em
+`HistoricalBet` desde a Melhoria #8) para escalar a fração de Kelly pela
+confiança do modelo, via `src.engine.kelly.fractional_kelly` — sem
+recalcular nada localmente. Omissos, o comportamento é exatamente igual
+ao de antes desta melhoria.
 """
 
 from dataclasses import dataclass
+from typing import Optional
 
 from src.engine.kelly import fractional_kelly, kelly_fraction
 
@@ -15,7 +24,14 @@ from src.engine.kelly import fractional_kelly, kelly_fraction
 class StakingStrategy:
     """Interface comum das estratégias de stake."""
 
-    def stake_for(self, probability: float, odd: float, bankroll: float = 1.0) -> float:
+    def stake_for(
+        self,
+        probability: float,
+        odd: float,
+        bankroll: float = 1.0,
+        lambda_tier: Optional[str] = None,
+        effective_sample_size: Optional[float] = None,
+    ) -> float:
         raise NotImplementedError
 
 
@@ -28,7 +44,14 @@ class FlatStake(StakingStrategy):
 
     unit: float = 1.0
 
-    def stake_for(self, probability: float, odd: float, bankroll: float = 1.0) -> float:
+    def stake_for(
+        self,
+        probability: float,
+        odd: float,
+        bankroll: float = 1.0,
+        lambda_tier: Optional[str] = None,
+        effective_sample_size: Optional[float] = None,
+    ) -> float:
         return self.unit
 
 
@@ -48,8 +71,21 @@ class KellyStake(StakingStrategy):
     cap: float = 0.05
     bankroll: float = 1.0
 
-    def stake_for(self, probability: float, odd: float, bankroll: float = None) -> float:
+    def stake_for(
+        self,
+        probability: float,
+        odd: float,
+        bankroll: float = None,
+        lambda_tier: Optional[str] = None,
+        effective_sample_size: Optional[float] = None,
+    ) -> float:
         bankroll = self.bankroll if bankroll is None else bankroll
-        kelly_pct = fractional_kelly(probability, odd, fraction=self.fraction)
+        kelly_pct = fractional_kelly(
+            probability,
+            odd,
+            fraction=self.fraction,
+            lambda_tier=lambda_tier,
+            effective_sample_size=effective_sample_size,
+        )
         kelly_pct = min(kelly_pct, self.cap)
         return round(kelly_pct * bankroll, 4)
