@@ -22,6 +22,7 @@ import pandas as pd
 from src.engine.edge import calculate_edge, calculate_ev, implied_probability
 from src.engine.kelly import kelly_fraction
 
+from .clv import calculate_clv_absolute, calculate_clv_percentage, classify_clv
 from .models import EvaluatedBet, HistoricalBet
 from .staking import FlatStake, StakingStrategy
 
@@ -65,6 +66,14 @@ def evaluate_bet(bet: HistoricalBet, staking: Optional[StakingStrategy] = None) 
 
     placed = HistoricalBet.is_bet_decision(bet.engine_decision)
 
+    # CLV (Closing Line Value): puramente derivado de `bet.odd` ("opening
+    # odd", já usada acima em probability/edge/ev/kelly, inalterada) e de
+    # `bet.closing_odd` (opcional) — ver `src.backtest.historical.clv` e
+    # `docs/09_clv.md`. Não influencia nenhum dos cálculos anteriores.
+    clv_absolute = calculate_clv_absolute(bet.odd, bet.closing_odd)
+    clv_percentage = calculate_clv_percentage(bet.odd, bet.closing_odd)
+    clv_classification = classify_clv(clv_absolute)
+
     return EvaluatedBet(
         match=bet.match,
         date=bet.date,
@@ -88,6 +97,11 @@ def evaluate_bet(bet: HistoricalBet, staking: Optional[StakingStrategy] = None) 
         model_confidence=bet.model_confidence,
         lambda_tier=bet.lambda_tier,
         effective_sample_size=bet.effective_sample_size,
+        bookmaker=bet.bookmaker,
+        closing_odd=bet.closing_odd,
+        clv_absolute=clv_absolute,
+        clv_percentage=clv_percentage,
+        clv_classification=clv_classification,
     )
 
 

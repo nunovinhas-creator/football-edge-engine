@@ -116,6 +116,32 @@ def segment_by_home_away(df: pd.DataFrame) -> pd.DataFrame:
     return segment_by_column(df, "home_or_away")
 
 
+def segment_by_bookmaker(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Agrupa por `bookmaker` (CLV — ver `docs/09_clv.md`). Como qualquer
+    `segment_by_column`, aplica `summary_metrics` a cada grupo, que já
+    inclui as métricas de CLV (média, mediana, % positivo, % que bateu o
+    mercado) — sem lógica adicional aqui.
+    """
+    return segment_by_column(df, "bookmaker")
+
+
+def segment_by_clv_classification(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Segmentação CLV positivo / negativo / neutro (`clv_classification`,
+    ver `src.backtest.historical.clv.classify_clv`). Apostas sem odd de
+    fecho (`clv_classification` a `None`) são excluídas do agrupamento —
+    retrocompatibilidade: datasets sem CLV simplesmente não produzem este
+    segmento (ver `all_segments`, que já omite segmentos vazios).
+    """
+    if df.empty or "clv_classification" not in df.columns:
+        return pd.DataFrame()
+    working = df[df["clv_classification"].notna()]
+    if working.empty:
+        return pd.DataFrame()
+    return segment_by_column(working, "clv_classification")
+
+
 def all_segments(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
     """
     Executa todas as análises por segmento definidas nos requisitos e
@@ -130,5 +156,7 @@ def all_segments(df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
         "by_ev_range": segment_by_ev_range(df),
         "by_favorite_vs_underdog": segment_by_favorite_vs_underdog(df),
         "by_home_away": segment_by_home_away(df),
+        "by_bookmaker": segment_by_bookmaker(df),
+        "by_clv_classification": segment_by_clv_classification(df),
     }
     return {name: result for name, result in segments.items() if not result.empty}

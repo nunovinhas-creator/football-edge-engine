@@ -54,6 +54,29 @@ class HistoricalBet:
         effective_sample_size: `LambdaEstimate.effective_sample_size`.
         Todos opcionais e retrocompatíveis: ficheiros/registos antigos que
         não os tragam continuam válidos (ficam a `None`, sem erro).
+
+    Campos opcionais de CLV (Closing Line Value — ver
+    `src.backtest.historical.clv` e `docs/09_clv.md`):
+        closing_odd:      última odd disponível antes do início do jogo,
+                          para o mesmo mercado/seleção de `odd` (a
+                          "opening odd" usada pelo motor na previsão — ver
+                          a propriedade `opening_odd` abaixo). Opcional e
+                          retrocompatível: quando ausente (`None`), nenhum
+                          CLV é calculado (nem por `evaluate_bet`, nem nas
+                          métricas/segmentos do Evaluation Framework) — o
+                          resto do comportamento fica inalterado. Não é
+                          obtida por nenhuma API nova: é fornecida por quem
+                          chama, tipicamente a partir da mesma BSD API já
+                          usada por `src.collector.odds.OddsCollector` /
+                          `src.live.providers.api_odds_provider.APIOddsProvider`
+                          / `src.historical_dataset.client.BSDHistoricalClient`,
+                          consultada de novo perto do kickoff.
+        bookmaker:        nome/slug da casa de apostas a que `odd` e
+                          `closing_odd` pertencem (ex. "consensus", tal
+                          como já produzido por
+                          `src.historical_dataset.normalizer.normalize_event`).
+                          Só usado para segmentação ("CLV por bookmaker");
+                          nunca em nenhum cálculo de edge/EV/kelly.
     """
 
     match: str
@@ -71,7 +94,20 @@ class HistoricalBet:
     model_confidence: Optional[str] = None
     lambda_tier: Optional[str] = None
     effective_sample_size: Optional[float] = None
+    closing_odd: Optional[float] = None
+    bookmaker: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def opening_odd(self) -> float:
+        """
+        Alias semântico de `odd`: a odd disponível quando o motor fez a
+        previsão ("opening odd" no vocabulário de CLV). Não duplica
+        armazenamento — `odd` continua a ser o único campo persistido e
+        continua a ser o que `evaluate_bet` usa para probabilidade de
+        mercado/edge/EV/kelly, exatamente como antes desta funcionalidade.
+        """
+        return self.odd
 
     @staticmethod
     def _coerce_result_won(result: Any) -> bool:
@@ -127,6 +163,10 @@ class HistoricalBet:
             "model_confidence": ("model_confidence", "confianca_modelo"),
             "lambda_tier": ("lambda_tier", "nivel_confianca_lambda"),
             "effective_sample_size": ("effective_sample_size", "amostra_efetiva"),
+            "closing_odd": (
+                "closing_odd", "odd_fecho", "odd_final", "odd_fechamento", "closing_line",
+            ),
+            "bookmaker": ("bookmaker", "casa_apostas", "casa_de_apostas", "bookie"),
         }
 
         def _is_missing(value: Any) -> bool:
@@ -164,6 +204,7 @@ class HistoricalBet:
                 )
 
         raw_effective_sample_size = pick("effective_sample_size", required=False)
+        raw_closing_odd = pick("closing_odd", required=False)
 
         return cls(
             match=match_value,
@@ -183,6 +224,8 @@ class HistoricalBet:
             effective_sample_size=(
                 float(raw_effective_sample_size) if raw_effective_sample_size is not None else None
             ),
+            closing_odd=(float(raw_closing_odd) if raw_closing_odd is not None else None),
+            bookmaker=pick("bookmaker", required=False),
             extra=extra,
         )
 
@@ -234,6 +277,18 @@ class EvaluatedBet:
     lambda_tier: Optional[str] = None
     effective_sample_size: Optional[float] = None
 
+    # CLV (Closing Line Value) — ver `src.backtest.historical.clv` e
+    # `docs/09_clv.md`. Todos opcionais e retrocompatíveis: quando a
+    # aposta histórica não trazia `closing_odd`, ficam a `None` sem
+    # afetar nenhum dos campos acima (probability/edge/ev/kelly/stake/
+    # profit continuam calculados exatamente como antes desta
+    # funcionalidade).
+    closing_odd: Optional[float] = None
+    bookmaker: Optional[str] = None
+    clv_absolute: Optional[float] = None
+    clv_percentage: Optional[float] = None
+    clv_classification: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "match": self.match,
@@ -245,6 +300,7 @@ class EvaluatedBet:
             "home_or_away": self.home_or_away,
             "is_favorite": self.is_favorite,
             "odd": self.odd,
+            "opening_odd": self.odd,
             "probability": self.probability,
             "market_probability": self.market_probability,
             "edge": self.edge,
@@ -259,4 +315,9 @@ class EvaluatedBet:
             "model_confidence": self.model_confidence,
             "lambda_tier": self.lambda_tier,
             "effective_sample_size": self.effective_sample_size,
+            "bookmaker": self.bookmaker,
+            "closing_odd": self.closing_odd,
+            "clv_absolute": self.clv_absolute,
+            "clv_percentage": self.clv_percentage,
+            "clv_classification": self.clv_classification,
         }

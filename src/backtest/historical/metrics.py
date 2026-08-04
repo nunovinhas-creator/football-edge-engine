@@ -17,7 +17,7 @@ Convenções:
       diverge de ROI sempre que o stake varia entre apostas (ex. Kelly).
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -43,6 +43,7 @@ def _empty_frame_metrics() -> Dict[str, Any]:
         "max_drawdown_pct": 0.0,
         "profit_factor": 0.0,
         "expectancy_per_bet": 0.0,
+        **_empty_clv_metrics(),
     }
 
 
@@ -171,4 +172,135 @@ def summary_metrics(df: pd.DataFrame) -> Dict[str, Any]:
         "max_drawdown_pct": dd["max_drawdown_pct"],
         "profit_factor": profit_factor(df),
         "expectancy_per_bet": expectancy_per_bet(df),
+        **clv_summary(df),
+    }
+
+
+# --------------------------------------------------------------------------
+# CLV (Closing Line Value) — ver `src.backtest.historical.clv` e
+# `docs/09_clv.md`. Todas as funções abaixo recebem o mesmo DataFrame de
+# apostas avaliadas que o resto deste módulo (uma linha por aposta, com as
+# colunas opcionais `closing_odd`/`clv_absolute`/`clv_percentage`
+# produzidas por `evaluator.evaluate_bet`) e são incluídas em
+# `summary_metrics`, pelo que ficam automaticamente disponíveis em todos os
+# segmentos (`segments.py`, ex. "CLV por competição/mercado/bookmaker") sem
+# nenhuma lógica adicional. Retrocompatíveis: DataFrames sem estas colunas
+# (dados anteriores a esta funcionalidade, ou construídos manualmente nos
+# testes de outras métricas) devolvem os valores "sem dados" abaixo, nunca
+# um erro.
+# --------------------------------------------------------------------------
+
+
+def _empty_clv_metrics() -> Dict[str, Any]:
+    return {
+        "clv_coverage_pct": 0.0,
+        "avg_clv_absolute": None,
+        "median_clv_absolute": None,
+        "avg_clv_percentage": None,
+        "median_clv_percentage": None,
+        "clv_positive_pct": None,
+        "clv_negative_pct": None,
+        "clv_neutral_pct": None,
+        "beat_market_pct": None,
+    }
+
+
+def clv_coverage_pct(df: pd.DataFrame) -> float:
+    """% de apostas do subconjunto com odd de fecho disponível (CLV calculável)."""
+    if df.empty or "closing_odd" not in df.columns:
+        return 0.0
+    return round(100.0 * float(df["closing_odd"].notna().sum()) / len(df), 2)
+
+
+def _clv_subset(df: pd.DataFrame) -> pd.DataFrame:
+    """Subconjunto de `df` com CLV calculável (`clv_absolute` não nulo)."""
+    if df.empty or "clv_absolute" not in df.columns:
+        return df.iloc[0:0]
+    return df[df["clv_absolute"].notna()]
+
+
+def avg_clv_absolute(df: pd.DataFrame) -> Optional[float]:
+    """CLV absoluto médio, sobre as apostas com odd de fecho disponível."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(float(subset["clv_absolute"].mean()), 6)
+
+
+def median_clv_absolute(df: pd.DataFrame) -> Optional[float]:
+    """CLV absoluto mediano, sobre as apostas com odd de fecho disponível."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(float(subset["clv_absolute"].median()), 6)
+
+
+def avg_clv_percentage(df: pd.DataFrame) -> Optional[float]:
+    """CLV percentual médio, sobre as apostas com odd de fecho disponível."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(float(subset["clv_percentage"].mean()), 4)
+
+
+def median_clv_percentage(df: pd.DataFrame) -> Optional[float]:
+    """CLV percentual mediano, sobre as apostas com odd de fecho disponível."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(float(subset["clv_percentage"].median()), 4)
+
+
+def clv_positive_pct(df: pd.DataFrame) -> Optional[float]:
+    """% de apostas com CLV ESTRITAMENTE positivo, sobre as que têm odd de fecho."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(100.0 * float((subset["clv_absolute"] > 0).sum()) / len(subset), 2)
+
+
+def clv_negative_pct(df: pd.DataFrame) -> Optional[float]:
+    """% de apostas com CLV negativo, sobre as que têm odd de fecho."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(100.0 * float((subset["clv_absolute"] < 0).sum()) / len(subset), 2)
+
+
+def clv_neutral_pct(df: pd.DataFrame) -> Optional[float]:
+    """% de apostas com CLV exatamente zero, sobre as que têm odd de fecho."""
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(100.0 * float((subset["clv_absolute"] == 0).sum()) / len(subset), 2)
+
+
+def beat_market_pct(df: pd.DataFrame) -> Optional[float]:
+    """
+    % de apostas que "bateram o mercado" — CLV >= 0 (não estritamente
+    positivo: inclui o caso neutro), sobre as que têm odd de fecho.
+    Mais permissiva do que `clv_positive_pct` de propósito: mede "não
+    perder valor face ao fecho", não só "ganhar valor" (ver
+    `clv.beat_closing_market` e `docs/09_clv.md`).
+    """
+    subset = _clv_subset(df)
+    if subset.empty:
+        return None
+    return round(100.0 * float((subset["clv_absolute"] >= 0).sum()) / len(subset), 2)
+
+
+def clv_summary(df: pd.DataFrame) -> Dict[str, Any]:
+    """Agrega todas as métricas de CLV pedidas pelo Evaluation Framework num único dicionário."""
+    if df.empty:
+        return _empty_clv_metrics()
+    return {
+        "clv_coverage_pct": clv_coverage_pct(df),
+        "avg_clv_absolute": avg_clv_absolute(df),
+        "median_clv_absolute": median_clv_absolute(df),
+        "avg_clv_percentage": avg_clv_percentage(df),
+        "median_clv_percentage": median_clv_percentage(df),
+        "clv_positive_pct": clv_positive_pct(df),
+        "clv_negative_pct": clv_negative_pct(df),
+        "clv_neutral_pct": clv_neutral_pct(df),
+        "beat_market_pct": beat_market_pct(df),
     }
