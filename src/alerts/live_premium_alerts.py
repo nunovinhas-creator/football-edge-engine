@@ -317,11 +317,17 @@ class LiveAlertMonitor:
         cooldown_seconds: int = COOLDOWN_SECONDS,
         min_odd_delta: float = MIN_ODD_DELTA,
         sender: Optional[Callable[[str], bool]] = None,
+        message_formatter: Optional[Callable[[Dict[str, Any], "AlertCriteriaResult"], str]] = None,
     ):
         self.db_path = db_path
         self.cooldown_seconds = cooldown_seconds
         self.min_odd_delta = min_odd_delta
         self.sender = sender or send_premium_alert
+        # Permite a um chamador (ex.: `src.alerts.live_scanner`) injetar um
+        # formato de mensagem diferente sem duplicar `evaluate_and_maybe_alert`
+        # nem os critérios/anti-spam abaixo. Por omissão mantém exatamente o
+        # comportamento existente (`format_alert_message`).
+        self.message_formatter = message_formatter or format_alert_message
         self._init_db()
 
     # -- infraestrutura SQLite -------------------------------------------
@@ -564,7 +570,7 @@ class LiveAlertMonitor:
                 criteria=criteria,
             )
 
-        message = format_alert_message(snapshot, criteria)
+        message = self.message_formatter(snapshot, criteria)
         telegram_sent = bool(self.sender(message))
 
         self._log_alert(snapshot, criteria, telegram_sent, now)
