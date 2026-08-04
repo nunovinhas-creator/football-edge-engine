@@ -41,6 +41,7 @@ from src.report.dashboard_data import (
     run_demo_backtest,
 )
 from src.report.explainability import generate_explanation
+from src.report.historical_validation import build_historical_validation
 
 DASHBOARD_VERSION = "Pro v1.0"
 
@@ -98,6 +99,48 @@ st.markdown(
         margin-top: 6px; padding-top: 10px; border-top: 1px solid rgba(127,127,127,0.25);
         font-style: italic;
     }
+    /* ---------------------------------------------------------------
+       📈 Validação Histórica da Aposta Atual — identidade visual
+       PRÓPRIA, deliberadamente distinta do Backtesting Global (que usa
+       o verde #1DB954 como cor de destaque). Usa roxo/violeta (#7c3aed)
+       para que nunca seja confundida com o painel de Backtesting
+       Global — mesmo objetivo do requisito "nunca reutilizar o mesmo
+       título / nunca misturar as métricas".
+       --------------------------------------------------------------- */
+    .fhv-section {
+        background: linear-gradient(180deg, rgba(124,58,237,0.10), rgba(124,58,237,0.03));
+        border: 2px solid rgba(124,58,237,0.45);
+        border-radius: 18px;
+        padding: 22px 24px;
+        margin-top: 34px;
+        margin-bottom: 18px;
+    }
+    .fhv-title {
+        font-size: 1.9rem; font-weight: 900; color: #a78bfa;
+        margin-bottom: 2px; letter-spacing: 0.2px;
+    }
+    .fhv-subtitle { opacity: 0.8; font-size: 0.88rem; margin-bottom: 6px; }
+    .fhv-divider { border-top: 1px dashed rgba(124,58,237,0.35); margin: 16px 0; }
+    .fhv-block-title {
+        font-size: 0.95rem; font-weight: 800; margin: 18px 0 8px 0;
+        border-left: 4px solid #7c3aed; padding-left: 10px; color: #a78bfa;
+    }
+    .fhv-card {
+        background-color: rgba(124,58,237,0.07); border-radius: 12px;
+        padding: 14px 16px; border: 1px solid rgba(124,58,237,0.28);
+        margin-bottom: 10px; height: 100%;
+    }
+    .fhv-verdict-box {
+        border-radius: 18px; padding: 26px 22px; text-align: center;
+        border: 3px solid rgba(255,255,255,0.18); margin: 12px 0 16px 0;
+    }
+    .fhv-verdict-label { font-size: 1.9rem; font-weight: 900; line-height: 1.15; color: #ffffff !important; }
+    .fhv-verdict-headline { font-size: 1.0rem; opacity: 0.92; margin-top: 8px; color: #ffffff !important; }
+    .fhv-explain {
+        font-style: italic; font-size: 0.92rem; opacity: 0.9;
+        border-top: 1px solid rgba(124,58,237,0.3); padding-top: 10px; margin-top: 4px;
+    }
+    .fhv-criteria li { margin-bottom: 4px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -112,6 +155,10 @@ def pill(label: str, color_key: str) -> str:
 
 def section_title(text: str) -> None:
     st.markdown(f'<div class="fee-section-title">{text}</div>', unsafe_allow_html=True)
+
+
+def fhv_block_title(text: str) -> None:
+    st.markdown(f'<div class="fhv-block-title">{text}</div>', unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------------------
@@ -409,12 +456,169 @@ def render_why_this_decision_panel(snap: dict) -> None:
     )
 
 
+def render_historical_validation_panel(snap: dict, report) -> None:
+    """
+    📈 VALIDAÇÃO HISTÓRICA DA APOSTA ATUAL — SEGUNDO painel, distinto do
+    Backtesting Global (`tab_backtest`). Reutiliza o MESMO `BacktestReport`
+    (`report.all_bets`) já carregado para o Backtesting Global; toda a
+    lógica de pesquisa/métricas vem de `src.report.historical_validation`,
+    que por sua vez só reaplica `src.backtest.historical.metrics` a um
+    subconjunto filtrado — nenhum modelo, Edge, EV, Kelly ou lambda é
+    recalculado aqui.
+    """
+    validation = build_historical_validation(snap, report.all_bets)
+    profile = validation["profile"]
+    search = validation["search"]
+    summary = validation["summary"]
+    comparison = validation["comparison"]
+    verdict = validation["verdict"]
+
+    st.markdown('<div class="fhv-section">', unsafe_allow_html=True)
+    st.markdown('<div class="fhv-title">📈 VALIDAÇÃO HISTÓRICA DA APOSTA ATUAL</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="fhv-subtitle">Desempenho apenas de apostas semelhantes à aposta atualmente '
+        'apresentada — diferente do <b>📊 Backtesting Global</b> (desempenho geral do sistema, '
+        'ver separador "📊 Backtest").</div>',
+        unsafe_allow_html=True,
+    )
+
+    # -- 1. Resumo ----------------------------------------------------
+    fhv_block_title("1️⃣ Resumo da Aposta Atual")
+    cols = st.columns(4)
+    cols[0].metric("Tipo de Aposta", profile.market)
+    cols[1].metric("Odd Utilizada", f"{profile.odd:.2f}")
+    cols[2].metric("Probabilidade do Motor", f"{profile.probability_pct:.1f}%")
+    cols[3].metric("Edge", f"{profile.edge_pct:+.1f}%")
+    cols2 = st.columns(4)
+    cols2[0].metric("EV", f"{profile.ev_pct:+.1f}%")
+    cols2[1].metric("Kelly", f"{profile.kelly_pct:.2f}%")
+    cols2[2].metric("Confiança", profile.confidence_label)
+    cols2[3].metric("Consenso entre Modelos", profile.consensus_label)
+
+    # -- 2. Pesquisa histórica -----------------------------------------
+    fhv_block_title("2️⃣ Pesquisa Histórica")
+    criteria_html = "".join(f"<li>{c}</li>" for c in search["criteria_applied"])
+    unavailable_html = "".join(f"<li>{c}</li>" for c in search["criteria_unavailable"])
+    st.markdown(
+        f"""
+        <div class="fhv-card fhv-criteria">
+            <b>Critérios aplicados (dados já existentes):</b>
+            <ul>{criteria_html or "<li><em>Nenhum jogo histórico disponível.</em></li>"}</ul>
+            <b>Critérios pedidos mas indisponíveis no dataset histórico de demonstração
+            (não simulados):</b>
+            <ul>{unavailable_html}</ul>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -- 3. Resultado histórico -----------------------------------------
+    fhv_block_title("3️⃣ Resultado Histórico")
+    n_bets = summary.get("n_bets", 0)
+    st.markdown(f"**Foram encontrados {n_bets} jogos semelhantes.**")
+    if n_bets:
+        st.markdown(
+            f"🟢 {summary['wins']} ganharam &nbsp;&nbsp;&nbsp; 🔴 {summary['losses']} perderam",
+            unsafe_allow_html=True,
+        )
+
+        row1 = st.columns(4)
+        row1[0].metric("Taxa de Sucesso", f"{summary['hit_rate_pct']:.1f}%")
+        row1[1].metric("ROI Histórico", f"{summary['roi_pct']:+.1f}%")
+        row1[2].metric("Yield", f"{summary['yield_pct']:+.1f}%")
+        row1[3].metric("Lucro Líquido", f"{summary['net_profit']:.2f} u")
+
+        row2 = st.columns(4)
+        row2[0].metric("Drawdown Máximo", f"{summary['max_drawdown_pct']:.1f}%")
+        row2[1].metric(
+            "Profit Factor",
+            f"{summary['profit_factor']:.2f}" if summary["profit_factor"] != float("inf") else "∞",
+        )
+        row2[2].metric("Expectancy", f"{summary['expectancy_per_bet']:.3f} u/aposta")
+        row2[3].metric("Odds Médias", f"{summary['avg_odd']:.2f}")
+    else:
+        st.info("Sem jogos históricos semelhantes suficientes no dataset de demonstração.")
+
+    # -- 4. Distribuição visual -----------------------------------------
+    fhv_block_title("4️⃣ Distribuição Visual")
+    if n_bets:
+        dist_col1, dist_col2 = st.columns(2)
+        with dist_col1:
+            curve = summary["equity_curve"]
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=list(range(1, len(curve) + 1)), y=curve.values,
+                    mode="lines+markers", line=dict(color="#7c3aed"),
+                )
+            )
+            fig.add_hline(y=0, line_dash="dash", line_color="gray")
+            fig.update_layout(title="Curva de Equity (histórico semelhante)", height=300, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, use_container_width=True, key=f"fhv-equity-{snap['match_id']}")
+
+            wl_colors = ["#1DB954" if w else "#e5484d" for w in summary["wl_sequence"]]
+            fig = go.Figure(go.Bar(x=list(range(1, len(wl_colors) + 1)), y=[1] * len(wl_colors), marker_color=wl_colors))
+            fig.update_layout(
+                title="Sequência W/L", height=220, margin=dict(l=10, r=10, t=40, b=10),
+                yaxis=dict(visible=False), showlegend=False,
+            )
+            st.plotly_chart(fig, use_container_width=True, key=f"fhv-wl-{snap['match_id']}")
+
+        with dist_col2:
+            fig = go.Figure(go.Histogram(x=summary["roi_per_bet_pct"], marker_color="#a78bfa"))
+            fig.update_layout(title="Histograma de ROI por Aposta (%)", height=260, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, use_container_width=True, key=f"fhv-roi-{snap['match_id']}")
+
+            fig = go.Figure(go.Histogram(x=summary["odds"], marker_color="#7c3aed"))
+            fig.update_layout(title="Distribuição de Odds", height=260, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig, use_container_width=True, key=f"fhv-odds-{snap['match_id']}")
+
+        fig = go.Figure(go.Histogram(x=summary["probabilities"], marker_color="#c4b5fd"))
+        fig.update_layout(title="Distribuição de Probabilidade (%)", height=260, margin=dict(l=10, r=10, t=40, b=10))
+        st.plotly_chart(fig, use_container_width=True, key=f"fhv-prob-{snap['match_id']}")
+    else:
+        st.caption("Sem dados suficientes para gráficos de distribuição.")
+
+    # -- 5. Comparação ----------------------------------------------------
+    fhv_block_title("5️⃣ Comparação — Aposta Atual vs. Histórico Semelhante")
+    comp_rows = []
+    for row in comparison:
+        hist_val = row["historical_avg"]
+        comp_rows.append(
+            {
+                "Métrica": row["label"],
+                "Aposta Atual": f"{row['current']:.2f}{row['unit']}",
+                "Média Histórica Semelhante": f"{hist_val:.2f}{row['unit']}" if hist_val is not None else "—",
+            }
+        )
+    st.dataframe(pd.DataFrame(comp_rows), use_container_width=True, hide_index=True)
+
+    # -- 6. Veredicto -----------------------------------------------------
+    fhv_block_title("6️⃣ Veredicto")
+    st.markdown(
+        f"""
+        <div class="fhv-verdict-box" style="background:{_BADGE_COLORS[verdict['color']]};
+             border-color:{_BADGE_BORDERS[verdict['color']]};">
+            <div class="fhv-verdict-label">{verdict['label']}</div>
+            <div class="fhv-verdict-headline">{verdict['headline']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -- 7. Explicação ------------------------------------------------
+    fhv_block_title("7️⃣ Explicação")
+    st.markdown(f'<div class="fhv-card fhv-explain">{validation["explanation"]}</div>', unsafe_allow_html=True)
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def render_logs_panel(snap: dict) -> None:
     with st.expander("🧾 Logs — snapshot completo (todos os valores usados nesta análise)"):
         st.json(snap)
 
 
-def render_match(snap: dict, bankroll: float) -> None:
+def render_match(snap: dict, bankroll: float, report) -> None:
     card = snap["card"]
     section_title("🏟️ Resumo do Jogo")
     st.subheader(f"{card['home_team']} {card['home_score']} - {card['away_score']} {card['away_team']}")
@@ -433,6 +637,7 @@ def render_match(snap: dict, bankroll: float) -> None:
     render_strength_panel(snap)
     render_explanation_panel(snap)
     render_why_this_decision_panel(snap)
+    render_historical_validation_panel(snap, report)
     render_logs_panel(snap)
 
 
@@ -444,6 +649,11 @@ with tab_live:
     bankroll = st.number_input(
         "Banca de referência para cálculo da stake (€)", min_value=10.0, value=1000.0, step=50.0
     )
+
+    # Mesmo BacktestReport usado pelo separador "📊 Backtest" (ver abaixo) —
+    # a Validação Histórica da Aposta Atual reutiliza-o para pesquisar
+    # jogos semelhantes, nunca carrega nem recalcula um dataset novo.
+    backtest_report_for_validation = _load_backtest_report()
 
     if using_demo:
         events_to_render = [DEMO_EVENT]
@@ -483,7 +693,7 @@ with tab_live:
             f"({card['elapsed']}) — {snap['decision']['label']} · Engine Score {snap['engine_score']['score']:.0f}/100"
         )
         with st.expander(header, expanded=(idx == 0)):
-            render_match(snap, bankroll)
+            render_match(snap, bankroll, backtest_report_for_validation)
 
 
 # ---------------------------------------------------------------------------
