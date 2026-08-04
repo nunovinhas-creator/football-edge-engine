@@ -1,6 +1,11 @@
 def is_valid_bet(result):
 
-    if result["decision"] != "VALUE BET":
+    # Bug: comparava com o literal "VALUE BET", que make_decision()
+    # (src/engine/decision.py) nunca produz — devolve "BET 🔥"/"WAIT ⚠️"/
+    # "PASS ❄️". Isto fazia com que nenhum resultado passasse nunca neste
+    # filtro. Os limiares abaixo (edge, ev, confidence, odd) mantêm-se
+    # exatamente iguais.
+    if "BET" not in result["decision"]:
         return False
 
     if result["edge"] < 5:
