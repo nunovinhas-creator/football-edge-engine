@@ -127,6 +127,115 @@ class TestNormalizeOdds(unittest.TestCase):
         self.assertIsNone(record["bookmakers_available"])
 
 
+class TestNormalizeOddsRealBSDShape(unittest.TestCase):
+    """
+    Forma real, plana, devolvida por `/events/{id}/odds/` (confirmada por
+    execução real do builder — ver auditoria da normalização de odds):
+    `home_win`/`draw`/`away_win`, `over_XX_goals`/`under_XX_goals` e
+    `btts_yes`/`btts_no`. Distinta das formas "plausíveis" já cobertas em
+    `TestNormalizeOdds` (nested `1x2`/`over_under`/`btts`, ou flat
+    `HOME`/`DRAW`/`AWAY` e `over_2_5`/`under_2_5`).
+    """
+
+    REAL_ODDS = {
+        "home_win": 1.12,
+        "draw": 8.20,
+        "away_win": 15.93,
+        "over_15_goals": 1.05,
+        "under_15_goals": 6.50,
+        "over_25_goals": 1.36,
+        "under_25_goals": 2.89,
+        "over_35_goals": 2.75,
+        "under_35_goals": 1.42,
+        "btts_yes": 2.15,
+        "btts_no": 1.63,
+    }
+
+    def test_extra_odds_maps_to_odds_home(self):
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(record["odds_home"], 1.12)
+
+    def test_extra_odds_maps_to_odds_draw(self):
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(record["odds_draw"], 8.20)
+
+    def test_extra_odds_maps_to_odds_away(self):
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(record["odds_away"], 15.93)
+
+    def test_over_under_all_thresholds_mapped(self):
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(record["odds_over_1_5"], 1.05)
+        self.assertEqual(record["odds_under_1_5"], 6.50)
+        self.assertEqual(record["odds_over_2_5"], 1.36)
+        self.assertEqual(record["odds_under_2_5"], 2.89)
+        self.assertEqual(record["odds_over_3_5"], 2.75)
+        self.assertEqual(record["odds_under_3_5"], 1.42)
+
+    def test_btts_mapped(self):
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(record["odds_btts_yes"], 2.15)
+        self.assertEqual(record["odds_btts_no"], 1.63)
+
+    def test_no_odds_available_leaves_all_odds_columns_none(self):
+        """Ausência de odds (jogo sem odds publicadas) não deve falhar nem inventar valores."""
+        record = normalize_event(_event(), odds=None)
+        for col in (
+            "odds_home", "odds_draw", "odds_away",
+            "odds_over_1_5", "odds_under_1_5",
+            "odds_over_2_5", "odds_under_2_5",
+            "odds_over_3_5", "odds_under_3_5",
+            "odds_btts_yes", "odds_btts_no",
+        ):
+            self.assertIsNone(record[col])
+        self.assertIsNone(record["extra_odds"])
+        self.assertIsNone(record["bookmaker"])
+
+    def test_empty_odds_json_leaves_all_odds_columns_none(self):
+        """JSON vazio (`{}`) — distinto de `None` — também não deve inventar valores."""
+        record = normalize_event(_event(), odds={})
+        for col in (
+            "odds_home", "odds_draw", "odds_away",
+            "odds_over_1_5", "odds_under_1_5",
+            "odds_over_2_5", "odds_under_2_5",
+            "odds_over_3_5", "odds_under_3_5",
+            "odds_btts_yes", "odds_btts_no",
+        ):
+            self.assertIsNone(record[col])
+        self.assertIsNone(record["extra_odds"])
+
+    def test_extra_odds_preserves_raw_json_unchanged(self):
+        """`extra_odds` deve continuar a refletir o payload bruto tal como veio da API."""
+        record = normalize_event(_event(), odds=self.REAL_ODDS)
+        self.assertEqual(json.loads(record["extra_odds"]), self.REAL_ODDS)
+
+    def test_old_nested_shape_still_supported(self):
+        """Compatibilidade com datasets antigos: a forma nested já suportada continua a funcionar."""
+        odds = {
+            "1x2": {"home": 1.9, "draw": 3.4, "away": 4.1},
+            "over_under": {"2.5": {"over": 1.85, "under": 1.95}},
+            "btts": {"yes": 1.7, "no": 2.1},
+        }
+        record = normalize_event(_event(), odds=odds)
+        self.assertEqual(record["odds_home"], 1.9)
+        self.assertEqual(record["odds_draw"], 3.4)
+        self.assertEqual(record["odds_away"], 4.1)
+        self.assertEqual(record["odds_over_2_5"], 1.85)
+        self.assertEqual(record["odds_under_2_5"], 1.95)
+        self.assertEqual(record["odds_btts_yes"], 1.7)
+        self.assertEqual(record["odds_btts_no"], 2.1)
+
+    def test_old_flat_uppercase_shape_still_supported(self):
+        """Compatibilidade com datasets antigos: a forma flat HOME/DRAW/AWAY continua a funcionar."""
+        odds = {"HOME": 2.0, "DRAW": 3.3, "AWAY": 3.6, "over_2_5": 1.9, "under_2_5": 1.9}
+        record = normalize_event(_event(), odds=odds)
+        self.assertEqual(record["odds_home"], 2.0)
+        self.assertEqual(record["odds_draw"], 3.3)
+        self.assertEqual(record["odds_away"], 3.6)
+        self.assertEqual(record["odds_over_2_5"], 1.9)
+        self.assertEqual(record["odds_under_2_5"], 1.9)
+
+
 class TestNormalizeStats(unittest.TestCase):
 
     def test_home_away_containers_with_known_aliases(self):

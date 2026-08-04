@@ -109,9 +109,12 @@ def _extract_1x2(odds: Any) -> Tuple[Optional[float], Optional[float], Optional[
     if not isinstance(odds, dict):
         return None, None, None
     container = odds.get("1x2") or odds.get("1X2") or odds.get("match_winner") or odds
-    home = _lookup(container, "home", "HOME", "1")
+    # A BSD API real devolve `/events/{id}/odds/` como um dict plano com
+    # `home_win`/`away_win` (não `home`/`away`, que era a forma assumida
+    # antes de haver uma resposta real para confirmar o formato).
+    home = _lookup(container, "home", "HOME", "home_win", "HOME_WIN", "1")
     draw = _lookup(container, "draw", "DRAW", "x", "X")
-    away = _lookup(container, "away", "AWAY", "2")
+    away = _lookup(container, "away", "AWAY", "away_win", "AWAY_WIN", "2")
     return home, draw, away
 
 
@@ -120,6 +123,9 @@ def _extract_over_under(odds: Any, threshold: str) -> Tuple[Optional[float], Opt
         return None, None
 
     suffix = threshold.replace(".", "_")
+    # Forma real da BSD API: dict plano com `over_25_goals`/`under_25_goals`
+    # (sufixo "25", sem underscore entre os dígitos, seguido de "_goals").
+    goals_suffix = threshold.replace(".", "")
     container = odds.get("over_under") or odds.get(f"over_under_{suffix}")
 
     sub = None
@@ -127,8 +133,16 @@ def _extract_over_under(odds: Any, threshold: str) -> Tuple[Optional[float], Opt
         sub = container.get(threshold) or container.get(f"over_under_{suffix}") or container.get(f"OU_{suffix}")
 
     if sub is None:
-        over = _lookup(odds, f"over_{suffix}", f"OVER_{suffix}")
-        under = _lookup(odds, f"under_{suffix}", f"UNDER_{suffix}")
+        over = _lookup(
+            odds,
+            f"over_{suffix}", f"OVER_{suffix}",
+            f"over_{goals_suffix}_goals", f"OVER_{goals_suffix}_GOALS",
+        )
+        under = _lookup(
+            odds,
+            f"under_{suffix}", f"UNDER_{suffix}",
+            f"under_{goals_suffix}_goals", f"UNDER_{goals_suffix}_GOALS",
+        )
         return over, under
 
     over = _lookup(sub, "over", "OVER")
@@ -278,9 +292,9 @@ def normalize_event(
         "extra_stats_home": _json_or_none(_leftover(home_stats, STAT_ALIASES)),
         "extra_stats_away": _json_or_none(_leftover(away_stats, STAT_ALIASES)),
         "extra_match_stats": _json_or_none(match_level_extra),
-        "extra_odds": _json_or_none(odds if not isinstance(odds, dict) else {
-            k: v for k, v in odds.items()
-            if k not in ("1x2", "1X2", "match_winner", "over_under", "btts", "BTTS",
-                         "home", "HOME", "draw", "DRAW", "away", "AWAY")
-        }),
+        # `extra_odds` guarda o payload bruto de `/events/{id}/odds/` tal
+        # como veio da API, sem filtrar as chaves já mapeadas para as
+        # colunas normalizadas acima — serve de auditoria/fallback para
+        # mercados ainda não suportados, não deve divergir do bruto.
+        "extra_odds": _json_or_none(odds),
     }
