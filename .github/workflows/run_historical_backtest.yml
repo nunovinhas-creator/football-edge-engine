@@ -1,0 +1,130 @@
+name: Run Historical Backtest (Historical Dataset Builder -> Backtesting Framework)
+
+# Apenas execução manual, tal como "Build Historical Dataset (BSD API)".
+# Liga o Historical Dataset Builder (BSD API) ao Backtesting
+# Framework/Framework de Avaliação já existentes, de ponta a ponta, sobre
+# jogos reais. Não altera nenhum algoritmo de previsão (ver
+# run_historical_backtest.py).
+#
+# Nota: `workflow_dispatch` só fica disponível na API/UI do GitHub depois
+# de este ficheiro existir na branch por omissão do repositório (`main`).
+# A validação real de ponta a ponta desta tarefa (ver
+# docs/AUDIT_MATEMATICA.md §19) foi feita com um trigger `push` temporário
+# restrito a este branch, já removido nesta versão.
+on:
+  workflow_dispatch:
+    inputs:
+      competition_id:
+        description: "ID da competição/liga na BSD API (vazio = todas as ligas ativas)"
+        required: false
+        type: string
+        default: "8"
+      season_id:
+        description: "ID da época (season_id) (vazio = todas as épocas da competição)"
+        required: false
+        type: string
+      markets:
+        description: "Mercados 1X2 a incluir no backtest, separados por vírgula"
+        required: false
+        type: string
+        default: "HOME,DRAW,AWAY"
+      staking:
+        description: "Estratégia de stake"
+        required: false
+        type: choice
+        options:
+          - flat
+          - kelly
+        default: flat
+      page_size:
+        description: "Tamanho de página nos pedidos paginados à BSD API"
+        required: false
+        type: string
+        default: "100"
+
+permissions:
+  contents: read
+
+jobs:
+  run-historical-backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout do código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Suite de testes completa (garante que nenhum algoritmo de previsão foi alterado)
+        env:
+          PYTHONPATH: .
+        run: python -m unittest discover -s tests -v
+
+      - name: 1. Construir dataset histórico (Historical Dataset Builder, BSD API)
+        env:
+          PYTHONPATH: .
+          # `inputs.*` só é preenchido em execuções `workflow_dispatch`;
+          # em `push` fica vazio, por isso cada valor tem um "||" com o
+          # mesmo default declarado acima em `workflow_dispatch.inputs`.
+          INPUT_COMPETITION_ID: ${{ inputs.competition_id || '8' }}
+          INPUT_SEASON_ID: ${{ inputs.season_id }}
+          INPUT_PAGE_SIZE: ${{ inputs.page_size || '100' }}
+          # Mesma chave, nos 4 nomes aceites por src/config/settings.py (ver
+          # build_historical_dataset.yml). Nunca impressa nos logs.
+          BSD_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          BZZ_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+          API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          CMD=(python build_historical_dataset.py
+            --output-dir data/historical
+            --base-name historical
+            --output csv
+            --page-size "$INPUT_PAGE_SIZE"
+            --resume false)
+
+          if [ -n "$INPUT_COMPETITION_ID" ]; then
+            CMD+=(--competition-id "$INPUT_COMPETITION_ID")
+          fi
+          if [ -n "$INPUT_SEASON_ID" ]; then
+            CMD+=(--season-id "$INPUT_SEASON_ID")
+          fi
+
+          "${CMD[@]}"
+
+      - name: 2. Backtesting Framework + Framework de Avaliação sobre o dataset real
+        env:
+          PYTHONPATH: .
+          INPUT_MARKETS: ${{ inputs.markets || 'HOME,DRAW,AWAY' }}
+          INPUT_STAKING: ${{ inputs.staking || 'flat' }}
+        run: |
+          set -euo pipefail
+          python run_historical_backtest.py \
+            --input data/historical/historical.csv \
+            --markets "$INPUT_MARKETS" \
+            --staking "$INPUT_STAKING" \
+            --output-dir output/historical_backtest
+
+      - name: Upload de artefactos (dataset + relatório do backtest)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: historical-backtest-${{ github.run_id }}
+          path: |
+            data/historical/historical.csv
+            data/historical/dataset_report.json
+            output/historical_backtest/**
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1138,3 +1138,173 @@ duas fórmulas divergentes (`update_outcomes` e a versão baseada em
 verdade, `src/backtest/goal_label.py::recompute_goal_in_next_15m`,
 reutilizada por todos os pontos de entrada que precisam de calcular esta
 label.
+
+---
+
+## 19. Backtesting Framework de ponta a ponta sobre dados reais (Melhoria #4)
+
+**Data:** 2026-08-04. Âmbito: colocar o Backtesting Framework
+(`src/backtest/historical`) e o Framework de Avaliação (`src.evaluation`)
+a correr de ponta a ponta sobre dados reais produzidos pelo Historical
+Dataset Builder (`src.historical_dataset`) e pela BSD API — a lacuna já
+registada em §16.3 ("Backtest real... não executado. O repositório não
+tem, no momento desta alteração, um dataset que ligue... a resultados
+finais e odds reais"). **Nenhuma fórmula do Dixon-Coles, Monte Carlo,
+Kelly, Edge, EV, Goal Engine, Machine Learning ou Decision Engine foi
+alterada** — mesma disciplina de âmbito das secções 15-18.
+
+### 19.1 A peça em falta: `model_prob`
+
+O Backtesting Framework (`load_historical_dataset`) e o Historical Dataset
+Builder já existiam e já tinham uma ponte entre os dois
+(`backtest_bridge.to_backtest_frame`) — mas essa ponte, deliberadamente,
+nunca calculava a probabilidade do modelo (`model_prob`): exigia que quem
+a chamasse a fornecesse. Como o Historical Dataset Builder não devolve
+`head_to_head` por jogo (só a BSD API de eventos futuros o devolve), não
+havia, antes desta secção, nenhum caminho automático que ligasse os dois
+módulos sobre dados reais sem inventar a probabilidade à mão.
+
+**Acrescentado** (`src/historical_dataset/backtest_bridge.py`), como
+adaptador — não como novo modelo:
+
+- **`derive_h2h(df, home_team, away_team, before)`**: reconstrói o dict
+  `head_to_head` (mesmo formato que `estimate_lambda`/
+  `estimate_pregame_lambdas` já esperavam de `EventCollector.get_matches()`
+  para jogos futuros) a partir de confrontos diretos **anteriores** já
+  presentes no próprio dataset devolvido pelo builder — sem pedir nada
+  extra à BSD API. Sem fuga de informação: só entram jogos com data
+  estritamente anterior ao jogo a avaliar. Reorienta os golos de cada
+  confronto passado para a identidade do jogo a jogar (ver
+  `docs/05_lambda_estimator.md` §5, ponto 1) quando as equipas jogaram
+  com mandos de campo trocados.
+- **`model_probabilities_from_dixon_coles(records)`**: para cada jogo,
+  chama `derive_h2h` e depois o Dixon-Coles já em produção para jogos
+  futuros (`src.engine.lambda_estimator.estimate_lambda` +
+  `src.engine.value.estimate_pregame_probabilities`, secções 15/16 desta
+  auditoria) — devolve `{event_id: {"home", "draw", "away"}}`.
+- **`run_historical_backtest.py`** (novo, raiz do repositório): CLI que
+  lê o CSV exportado por `build_historical_dataset.py`, calcula
+  `model_prob` como acima para os mercados 1X2, converte via
+  `to_backtest_frame`, corre `src.backtest.historical.BacktestEngine` e
+  `src.evaluation.report.evaluate` (o Framework de Avaliação), e imprime/
+  exporta o relatório completo (CSV, Markdown, Excel, HTML, gráficos).
+
+Only os mercados HOME/DRAW/AWAY foram ligados — os únicos para os quais
+`estimate_pregame_probabilities` já devolve probabilidade sem exigir
+nenhuma agregação nova sobre a matriz de resultados do Dixon-Coles (Over/
+Under e BTTS exigiriam somar essa matriz de outra forma, fora do âmbito
+desta tarefa).
+
+### 19.2 Incompatibilidade de esquema encontrada e corrigida (camada de conversão, não fórmula)
+
+A primeira execução real revelou uma incompatibilidade genuína, nunca
+antes exercitada: a BSD API devolve `event_date` em ISO 8601 UTC (ex.
+`"2024-08-10T15:00:00Z"`), que `pandas.to_datetime` interpreta como
+datetime **com fuso horário**. `openpyxl`/`pandas.ExcelWriter` (usados por
+`BacktestReport.to_excel`, já existente) rejeitam datetimes com fuso
+horário (`ValueError: Excel does not support datetimes with timezones`).
+O `examples/backtest/sample_real_games.csv` ilustrativo usado por
+`run_backtest.py --demo` só tem datas simples (`"2011-10-23"`, sem fuso),
+por isso este caminho nunca tinha sido exercitado antes desta tarefa.
+
+**Correção, só na camada de conversão** (`backtest_bridge._naive_dates`,
+chamada por `to_backtest_frame`): normaliza a coluna `date` para UTC "sem
+fuso" antes de entrar no Backtesting Framework — preserva o instante
+exato (tudo já está em UTC) e só remove a anotação de fuso. Nem
+`load_historical_dataset`, nem `BacktestEngine`, nem nenhum exportador
+foram tocados. Teste de regressão em
+`tests/historical_dataset/test_backtest_bridge.py::test_timezone_aware_dates_from_bsd_api_are_normalized_to_naive`.
+
+### 19.3 Execução real — Historical Dataset Builder + Backtesting Framework + Framework de Avaliação
+
+Executado em CI (GitHub Actions, com acesso real à BSD API via
+`secrets.BZZOIRO_API_KEY` — este ambiente de auditoria não tem
+credenciais nem acesso de rede à BSD API, a mesma limitação já registada
+em §15.6/§16.3/§17.3/§18.6), workflow
+`.github/workflows/run_historical_backtest.yml`
+(`build_historical_dataset.py --competition-id 8` seguido de
+`run_historical_backtest.py`), competição `id=8` "UEFA Europa League" —
+a mesma já usada como referência em §16.3, por ser a única com cobertura
+de odds reais já confirmada (época em curso). Execução completa em CI:
+~3m30s.
+
+| Métrica pedida | Valor |
+|---|---|
+| Jogos analisados (obtidos do Historical Dataset Builder) | 301 |
+| Jogos com odd real e probabilidade válidas (pelo menos um mercado) | 30 |
+| Apostas simuladas (jogo × mercado, HOME/DRAW/AWAY) | 90 |
+| Apostas colocadas (`engine_decision=BET`, `DecisionEngine` real) | 35 |
+| ROI | 24.06% |
+| Yield | 24.06% |
+| Profit (lucro líquido, stake fixo=1 unidade) | 8.42 |
+| Odd média das apostas colocadas | 6.75 |
+| Brier Score (todas as apostas avaliadas) | 0.20713 |
+| Log Loss (todas as apostas avaliadas) | 0.6025 |
+| Calibration Error / ECE (todas as apostas avaliadas) | 0.068431 |
+| Max Drawdown | -11.22 (-201.44%) |
+| Suite de testes completa (`python -m unittest discover -s tests`) | 444 testes, 0 falhas |
+
+Dos 301 jogos devolvidos pelo builder, apenas 30 têm odds reais — confirma
+em execução real (não apenas por inspeção estática, como em §16.3) a
+limitação já documentada em `docs/07_historical_dataset_builder.md`
+("Limitações", ponto 2): a BSD API só publica odds para a época em
+curso/mais recente de cada competição; épocas já terminadas devolvem os
+11 campos de odds a `null`. Este é o motivo do número relativamente baixo
+de apostas simuladas face aos 301 jogos coletados — não uma falha do
+bridge nem do Backtesting Framework.
+
+**Sobre o Max Drawdown >100%:** `max_drawdown_pct` (`src/backtest/historical/metrics.py::max_drawdown`,
+não alterado aqui) divide o drawdown máximo absoluto pelo pico de banca
+acumulada **no momento em que esse drawdown ocorre** — com stake fixo=1 e
+poucas dezenas de apostas, esse pico pode ser pequeno (ex. +1 ou +2
+unidades acumuladas cedo na série) antes de uma sequência de perdas mais
+longa, produzindo uma percentagem >100% em relação a esse pico específico
+(não em relação a uma banca inicial fixa). É um comportamento conhecido
+de dividir por um pico pequeno, não um bug introduzido por esta tarefa —
+registado aqui para leitura correta do número, sem alterar a fórmula.
+
+**Sobre a amostra ser pequena (30 jogos, 90 apostas) e o `model_prob` usado:**
+com H2H derivado apenas dos confrontos diretos dentro do próprio dataset
+(§19.1), a maioria dos jogos da época em curso não tem nenhum confronto
+direto anterior registado nesta mesma execução (equipas que só se
+cruzaram nesta época), pelo que `estimate_lambda` cai
+predominantemente no prior de liga (Nível C/D, §16.1) — a mesma
+limitação de fundo já registada em §16.4 (ausência de uma fonte de golos
+por equipa ao longo de uma temporada completa) continua válida aqui; esta
+tarefa liga o pipeline, não melhora a qualidade preditiva do estimador. O
+ROI/Yield positivos observados (24.06%, N=35 apostas colocadas) não devem
+ser lidos como evidência de valor preditivo real — a amostra é pequena
+demais e o método de estimação de λ, nestas condições, é
+predominantemente o prior de liga; ver §19.4.
+
+### 19.4 O que continua por fazer
+
+- Backtest sobre uma amostra maior (múltiplas competições/épocas em
+  curso, não só uma) — limitado nesta tarefa pelo tempo de execução em CI
+  e pela disciplina de âmbito ("colocar a funcionar", não "otimizar" nem
+  "expandir a recolha de dados").
+- Ligar Over/Under e BTTS (exigiria somar a matriz do Dixon-Coles de
+  outra forma sobre `_market_probabilities_from_matrix` — fora do âmbito
+  desta tarefa, que se limitou aos mercados já suportados por
+  `estimate_pregame_probabilities` sem código novo de agregação).
+- A limitação de fundo já registada em §12.2/§16.4 (falta de uma fonte de
+  golos por equipa ao longo de uma temporada completa, para uma
+  estimação de ataque/defesa por MLE) continua a ser a limitação mais
+  relevante para a qualidade do `model_prob` usado neste backtest.
+
+### 19.5 Ficheiros alterados/criados
+
+- `src/historical_dataset/backtest_bridge.py`: `derive_h2h`,
+  `model_probabilities_from_dixon_coles`, `_naive_dates` (novos); `to_backtest_frame`
+  passou a normalizar `date` via `_naive_dates` (correção de esquema, §19.2).
+- `run_historical_backtest.py` (novo): CLI de ponta a ponta.
+- `.github/workflows/run_historical_backtest.yml` (novo): workflow manual
+  (`workflow_dispatch`, igual em espírito a "Build Historical Dataset
+  (BSD API)") que corre a suite de testes completa, constrói o dataset
+  real e executa o backtest em CI.
+- `tests/historical_dataset/test_backtest_bridge.py`: testes novos
+  offline (`TestDeriveH2H`, `TestModelProbabilitiesFromDixonColes`, teste
+  de normalização de datas com fuso horário) — 10 testes novos (de 12
+  para 22).
+- `docs/04_backtesting_framework.md`: nova secção com o exemplo real e a
+  tabela de resultados desta execução.

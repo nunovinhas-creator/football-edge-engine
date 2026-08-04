@@ -353,6 +353,84 @@ python run_backtest.py --demo --market OVER_2.5                                #
 
 ---
 
+## Ponte com o Historical Dataset Builder — dados 100% reais da BSD API (`run_historical_backtest.py`)
+
+O exemplo `--demo` acima usa odds/probabilidade **ilustrativas** (ver
+secção anterior). Para um backtest sobre jogos, odds e resultados
+**inteiramente reais** (sem nenhum valor inventado), o `run_historical_backtest.py`
+(raiz do repositório) liga o Historical Dataset Builder
+(`src.historical_dataset`, ver `docs/07_historical_dataset_builder.md`) a
+este Backtesting Framework e ao Framework de Avaliação
+(`src.evaluation`, `docs/06_model_evaluation.md`), de ponta a ponta:
+
+```bash
+# 1. Construir o dataset histórico real (jogos terminados, odds, BSD API)
+python build_historical_dataset.py --output-dir data/historical --competition-id 8
+
+# 2. Backtest + avaliação completa sobre esse dataset
+python run_historical_backtest.py --input data/historical/historical.csv
+```
+
+Não altera nenhum algoritmo de previsão. A única peça que faltava é a
+probabilidade do modelo por jogo (`model_prob`) — o Historical Dataset
+Builder deliberadamente não a calcula (ver `backtest_bridge.py`, "Este
+módulo NÃO calcula nem inventa `model_prob`"). `run_historical_backtest.py`
+resolve isto reutilizando o **mesmo** Dixon-Coles já em produção para
+jogos futuros (`src.engine.lambda_estimator.estimate_lambda` +
+`src.engine.value.estimate_pregame_probabilities`, ver
+`docs/AUDIT_MATEMATICA.md` §15/§16), com um único adaptador novo —
+`src.historical_dataset.backtest_bridge.derive_h2h` — que constrói o
+`head_to_head` que esse estimador já esperava a partir de confrontos
+diretos **anteriores** já presentes no próprio dataset (sem pedir nada
+extra à BSD API e sem fuga de informação: só entram jogos com data
+estritamente anterior ao jogo avaliado). Suporta os mercados 1X2
+(HOME/DRAW/AWAY) — os únicos para os quais `estimate_pregame_probabilities`
+já devolve probabilidade sem exigir nenhuma agregação nova sobre a matriz
+de resultados do Dixon-Coles.
+
+**Limitação de dados conhecida (não é um bug deste script):** a BSD API só
+devolve odds reais para a época em curso/mais recente de cada competição —
+épocas já terminadas devolvem os 11 campos de odds a `null` (ver
+`docs/07_historical_dataset_builder.md`, "Limitações", ponto 2). Jogos sem
+odd publicada para o mercado escolhido são automaticamente descartados
+(`backtest_bridge.to_backtest_frame`), pelo que o número de apostas
+efetivamente simuladas é tipicamente muito menor do que o total de jogos
+devolvidos pelo builder.
+
+**Execução real de referência** (workflow `Run Historical Backtest`,
+`--competition-id 8`, UEFA Europa League — mesma competição já usada como
+referência em `docs/AUDIT_MATEMATICA.md` §16.3, escolhida por já ter odds
+reais confirmadas para a época em curso):
+
+| Métrica | Valor |
+|---|---|
+| Jogos obtidos do Historical Dataset Builder | 301 |
+| Jogos com odd real e probabilidade válidas | 30 |
+| Apostas simuladas (jogo × mercado, HOME/DRAW/AWAY) | 90 |
+| Apostas colocadas (`engine_decision=BET`) | 35 |
+| ROI | 24.06% |
+| Yield | 24.06% |
+| Profit (lucro líquido, stake fixo=1) | 8.42 |
+| Brier Score | 0.20713 |
+| Log Loss | 0.6025 |
+| Calibration Error (ECE) | 0.068431 |
+| Max Drawdown | -11.22 (-201.44%) |
+
+Ver detalhe completo em `docs/AUDIT_MATEMATICA.md` §19 (número de jogos
+por época, limitação de cobertura de odds, e discussão do drawdown
+percentual >100%, um artefacto conhecido — não alterado aqui — de como
+`max_drawdown_pct` divide pelo pico de banca no momento do drawdown
+máximo, ver `src/backtest/historical/metrics.py::max_drawdown`).
+
+Testado offline (sem rede) em
+`tests/historical_dataset/test_backtest_bridge.py` (`TestDeriveH2H`,
+`TestModelProbabilitiesFromDixonColes`): ausência de confrontos diretos,
+sem fuga de informação (jogos futuros nunca entram no H2H), reorientação
+correta quando o confronto anterior teve mandos de campo trocados, e
+probabilidades 1X2 que somam sempre 1.0.
+
+---
+
 ## Testes
 
 - **Unitários** (`tests/backtest/test_metrics.py`,
