@@ -30,12 +30,15 @@ from src.backtest.historical.metrics import equity_curve
 from src.report.dashboard_data import (
     DEMO_EVENT,
     DEMO_MATCH_DATA,
+    build_live_alert_monitor_rows,
     build_match_snapshot,
+    count_alerts_sent_today,
     extract_competition,
     extract_status_label,
     get_bsd_status,
     get_ml_status,
     get_telegram_status,
+    load_live_alerts,
     load_live_history,
     load_value_alerts,
     run_demo_backtest,
@@ -191,6 +194,11 @@ def _load_alerts_df():
     return load_value_alerts()
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _load_premium_alerts_df():
+    return load_live_alerts()
+
+
 goal_engine = _load_goal_engine()
 ml_predictor = _load_ml_predictor()
 
@@ -246,8 +254,8 @@ st.divider()
 # Navegação principal
 # ---------------------------------------------------------------------------
 
-tab_live, tab_backtest, tab_history = st.tabs(
-    ["🔥 Monitor ao Vivo", "📊 Backtest", "🗂️ Histórico & Logs"]
+tab_live, tab_backtest, tab_history, tab_premium_alerts = st.tabs(
+    ["🔥 Monitor ao Vivo", "📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor"]
 )
 
 
@@ -613,6 +621,31 @@ def render_historical_validation_panel(snap: dict, report) -> None:
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def render_live_alert_monitor_panel(rows: list, alerts_df: pd.DataFrame, alerts_today: int) -> None:
+    """
+    🚨 Live Alert Monitor — NOVO painel (não substitui nenhum existente).
+    Mostra o estado do Alerta Live Premium (`src.alerts.live_premium_alerts`)
+    por jogo em direto — Estado, Jogo, Mercado, Odd, Probabilidade, Motivo
+    e Hora do último alerta — mais o histórico completo já gravado em
+    `data/live_alerts.db` e o número de alertas enviados hoje. Apenas
+    apresentação: os critérios e o envio real acontecem em
+    `LiveAlertMonitor.evaluate_and_maybe_alert` (chamado por
+    `src/engine/live_monitor.py`), nunca aqui.
+    """
+    st.metric("🔥 Alertas Live Premium enviados hoje", alerts_today)
+
+    if not rows:
+        st.info("Sem jogos em direto a monitorizar neste momento para o Alerta Live Premium.")
+    else:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+    with st.expander("🧾 Histórico completo de Alertas Live Premium (data/live_alerts.db)"):
+        if alerts_df.empty:
+            st.info("Ainda não foi enviado nenhum Alerta Live Premium.")
+        else:
+            st.dataframe(alerts_df, use_container_width=True)
+
+
 def render_logs_panel(snap: dict) -> None:
     with st.expander("🧾 Logs — snapshot completo (todos os valores usados nesta análise)"):
         st.json(snap)
@@ -660,6 +693,11 @@ with tab_live:
     else:
         events_to_render = live_events
 
+    # Snapshots reunidos aqui para alimentar o painel "🚨 Live Alert
+    # Monitor" (separador abaixo) sem recalcular nada — reutiliza
+    # exatamente os mesmos `snap` já construídos para este separador.
+    live_snapshots = []
+
     for idx, event in enumerate(events_to_render):
         if using_demo:
             match_data = DEMO_MATCH_DATA
@@ -686,6 +724,7 @@ with tab_live:
             ml_predictor=ml_predictor,
             goal_engine=goal_engine,
         )
+        live_snapshots.append(snap)
 
         card = snap["card"]
         header = (
@@ -817,3 +856,25 @@ with tab_history:
 
     with st.expander("🧾 Logs — todos os snapshots gravados (data/live_history.db)"):
         st.dataframe(history_df, use_container_width=True)
+
+
+# ---------------------------------------------------------------------------
+# 🚨 Tab: Live Alert Monitor (novo painel — não substitui nenhum existente)
+# ---------------------------------------------------------------------------
+
+with tab_premium_alerts:
+    st.subheader("🚨 Live Alert Monitor")
+    st.caption(
+        "Alerta Live Premium (`src.alerts.live_premium_alerts`): envia uma notificação Telegram "
+        "apenas quando os 8 critérios oficiais estiverem TODOS reunidos (Monte Carlo ≥70%, "
+        "Goal Engine ≥70%, Decisão = 🟢 APOSTAR AGORA, Edge ≥5%, EV >0%, Kelly >0%, "
+        "odd entre 1.40-2.30, consenso Goal Engine/ML ≤15 p.p.). Este painel só apresenta o "
+        "estado atual e o histórico já registados — a decisão e o envio reais acontecem no "
+        "monitor automático (`src/engine/live_monitor.py`)."
+    )
+
+    premium_rows = build_live_alert_monitor_rows(live_snapshots)
+    premium_alerts_df = _load_premium_alerts_df()
+    premium_alerts_today = count_alerts_sent_today()
+
+    render_live_alert_monitor_panel(premium_rows, premium_alerts_df, premium_alerts_today)

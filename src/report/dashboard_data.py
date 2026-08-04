@@ -25,6 +25,7 @@ de agrupamento documenta explicitamente que é "apenas apresentação".
 
 import os
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -44,6 +45,11 @@ from src.engine.edge import calculate_ev
 from src.backtest.logger import DB_PATH
 from src.backtest.historical import BacktestEngine
 from src.backtest.historical.dataset import load_historical_dataset
+from src.alerts.live_premium_alerts import (
+    ALERT_MARKET_LABEL,
+    DEFAULT_ALERTS_DB_PATH,
+    evaluate_alert_criteria,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DEMO_BACKTEST_DATASET = REPO_ROOT / "examples" / "backtest" / "sample_real_games.csv"
@@ -571,3 +577,81 @@ def load_value_alerts(limit: int = 100) -> pd.DataFrame:
         return pd.DataFrame()
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# 🚨 Live Alert Monitor (lê o mesmo `data/live_alerts.db` já escrito por
+# `src.alerts.live_premium_alerts.LiveAlertMonitor`, chamado pelo monitor
+# real em `src.engine.live_monitor` — não escreve, não decide, não envia
+# nenhum alerta a partir daqui)
+# ---------------------------------------------------------------------------
+
+def load_live_alerts(limit: int = 200) -> pd.DataFrame:
+    if not os.path.exists(DEFAULT_ALERTS_DB_PATH):
+        return pd.DataFrame()
+    conn = sqlite3.connect(DEFAULT_ALERTS_DB_PATH)
+    try:
+        return pd.read_sql_query(
+            "SELECT * FROM live_alerts ORDER BY id DESC LIMIT ?", conn, params=(limit,)
+        )
+    except Exception:
+        return pd.DataFrame()
+    finally:
+        conn.close()
+
+
+def count_alerts_sent_today() -> int:
+    df = load_live_alerts(limit=100000)
+    if df.empty or "timestamp" not in df.columns or "telegram_sent" not in df.columns:
+        return 0
+    today = datetime.utcnow().date().isoformat()
+    sent = df[df["telegram_sent"] == 1]
+    return int(sent["timestamp"].astype(str).str.startswith(today).sum())
+
+
+def build_live_alert_monitor_rows(snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Painel "🚨 Live Alert Monitor" (novo painel, não substitui nenhum
+    existente). Cruza `evaluate_alert_criteria` (puro, sem efeitos
+    secundários) com o histórico já gravado em `data/live_alerts.db` para
+    apresentar, por jogo em direto: Estado (🚨 ALERTA ENVIADO / 🟢 ATIVO /
+    🟡 À ESPERA), hora do último alerta, mercado, odd, probabilidade e
+    motivo. Não recalcula nenhuma probabilidade/edge/EV/Kelly, não decide
+    nem envia nenhum alerta — isso é feito exclusivamente por
+    `LiveAlertMonitor.evaluate_and_maybe_alert`.
+    """
+    alerts_df = load_live_alerts(limit=500)
+    rows: List[Dict[str, Any]] = []
+
+    for snap in snapshots:
+        match_id = str(snap.get("match_id"))
+        criteria = evaluate_alert_criteria(snap)
+        card = snap["card"]
+        value = snap["value"]
+
+        last_alert_at = None
+        if not alerts_df.empty and "match_id" in alerts_df.columns:
+            match_alerts = alerts_df[alerts_df["match_id"].astype(str) == match_id]
+            if not match_alerts.empty:
+                last_alert_at = match_alerts.iloc[0]["timestamp"]
+
+        if last_alert_at is not None:
+            state = "🚨 ALERTA ENVIADO"
+        elif criteria.passed:
+            state = "🟢 ATIVO"
+        else:
+            state = "🟡 À ESPERA"
+
+        rows.append(
+            {
+                "Estado": state,
+                "Jogo": f"{card['home_team']} vs {card['away_team']}",
+                "Mercado": ALERT_MARKET_LABEL,
+                "Odd": value["bookie_odd"],
+                "Probabilidade (Goal Engine)": criteria.values["goal_engine_probability"],
+                "Motivo": "Todos os critérios reunidos." if criteria.passed else "; ".join(criteria.failed_reasons),
+                "Hora do último alerta": last_alert_at or "—",
+            }
+        )
+
+    return rows

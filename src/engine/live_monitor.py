@@ -19,6 +19,9 @@ from src.engine.live_decision import evaluate_live_market
 from src.live.value_alerts import notify_if_value
 from src.models.live_state import LiveMatchState
 from src.backtest.logger import init_db, log_snapshot
+from src.model.ml_predictor import LiveMLPredictor
+from src.report.dashboard_data import build_match_snapshot
+from src.alerts.live_premium_alerts import LiveAlertMonitor
 
 def run_live_pipeline():
     init_db()
@@ -37,13 +40,23 @@ def run_live_pipeline():
         odds_provider = None
 
     engine = LiveGoalEngine()
+    ml_predictor = LiveMLPredictor()
+    alert_monitor = LiveAlertMonitor()
     events = fetcher.get_live_events()
-    
+
     if not events:
         print("ℹ️ Nenhum jogo a decorrer neste momento.")
         return
 
     print(f"⚽ {len(events)} jogos em direto identificados.")
+
+    # Jogos que já não aparecem nesta varredura (a BSD API deixa de listar
+    # jogos terminados em "events/live") são considerados terminados —
+    # limpa automaticamente o registo interno de anti-spam do Alerta Live
+    # Premium para esses jogos (ver LiveAlertMonitor.sync_active_matches).
+    alert_monitor.sync_active_matches(
+        event.get("id") for event in events
+    )
 
     for event in events:
         match_data = fetcher.parse_live_metrics_for_engine(event)
@@ -137,6 +150,20 @@ def run_live_pipeline():
                     decision=decision
                 ):
                     print(f"📲 Alerta +EV enviado para {home} vs {away}.")
+
+                # Alerta Live Premium (só quando os 8 critérios oficiais
+                # estão reunidos — ver src.alerts.live_premium_alerts).
+                # Reutiliza a mesma odd real já obtida acima em vez de
+                # deixar build_match_snapshot cair no fallback DEFAULT_BOOKIE_ODD.
+                match_data["live_odd_over"] = bookie_odd
+                premium_snapshot = build_match_snapshot(
+                    match_data,
+                    ml_predictor=ml_predictor,
+                    goal_engine=engine,
+                )
+                outcome = alert_monitor.evaluate_and_maybe_alert(premium_snapshot)
+                if outcome.sent:
+                    print(f"🔥 Alerta Live Premium enviado para {home} vs {away}.")
             except Exception as e:
                 print(f"⚠️ Não foi possível avaliar valor/odds para match_id={match_data.get('match_id')}: {e}")
 
