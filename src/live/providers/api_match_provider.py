@@ -6,6 +6,47 @@ from src.live.providers.incidents_provider import IncidentsProvider
 from src.live.providers.bsd_feature_adapter import BSDFeatureAdapter
 
 
+def _lookup_stat(container, *keys):
+    """Procura o primeiro de `keys` num dict de stats por equipa (case-insensitive).
+
+    Mesmo padrão defensivo usado em `historical_dataset/normalizer.py` para
+    o mesmo endpoint (`/events/{id}/stats/`), já que a BSD API não
+    documenta formalmente esta resposta (schema.yaml marca-a como
+    "No response body").
+    """
+
+    if not isinstance(container, dict):
+        return None
+
+    for key in keys:
+        if key in container and container[key] is not None:
+            return container[key]
+
+    lowered = {str(k).lower(): v for k, v in container.items()}
+
+    for key in keys:
+        value = lowered.get(key.lower())
+        if value is not None:
+            return value
+
+    return None
+
+
+def _to_number(value, default=0.0):
+    if value is None:
+        return default
+
+    if isinstance(value, str):
+        value = value.replace("%", "").strip()
+        if not value:
+            return default
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class APIMatchProvider:
 
     BASE_URL = BSD_ROOT_URL
@@ -99,6 +140,44 @@ class APIMatchProvider:
         )
 
 
+        dangerous_attacks = int(
+            _to_number(_lookup_stat(home, "dangerous_attack", "dangerous_attacks"))
+            + _to_number(_lookup_stat(away, "dangerous_attack", "dangerous_attacks"))
+        )
+
+        shots = int(
+            _to_number(_lookup_stat(home, "shots_total", "total_shots", "shots"))
+            + _to_number(_lookup_stat(away, "shots_total", "total_shots", "shots"))
+        )
+
+        shots_on_target = int(
+            _to_number(_lookup_stat(home, "shots_on_target", "shots_on_goal", "on_target_shots"))
+            + _to_number(_lookup_stat(away, "shots_on_target", "shots_on_goal", "on_target_shots"))
+        )
+
+        corners = int(
+            _to_number(_lookup_stat(home, "corners", "corner_kicks"))
+            + _to_number(_lookup_stat(away, "corners", "corner_kicks"))
+        )
+
+        possession = _to_number(
+            _lookup_stat(home, "possession", "ball_possession", "possession_pct"),
+            default=None
+        )
+
+        if possession is None:
+            away_possession = _to_number(
+                _lookup_stat(away, "possession", "ball_possession", "possession_pct"),
+                default=None
+            )
+
+            possession = (
+                (100.0 - away_possession)
+                if away_possession is not None
+                else 50.0
+            )
+
+
         return LiveMatchState(
 
             minute=event.get(
@@ -125,16 +204,16 @@ class APIMatchProvider:
             home_style="balanced",
 
 
-            dangerous_attacks_10m=0,
+            dangerous_attacks_10m=dangerous_attacks,
 
-            shots_on_target_10m=0,
+            shots_on_target_10m=shots_on_target,
 
-            shots_10m=0,
+            shots_10m=shots,
 
-            corners_10m=0,
+            corners_10m=corners,
 
 
-            possession=50.0,
+            possession=possession,
 
 
             goals_last_15=incident_features[
