@@ -14,18 +14,27 @@ if str(root_dir) not in sys.path:
 from src.api.live_fetcher import BSDLiveFetcher
 from src.live.pressure import PressureEngine
 from src.live.engine import LiveGoalEngine
+from src.live.providers.api_odds_provider import APIOddsProvider
+from src.engine.live_decision import evaluate_live_market
+from src.live.value_alerts import notify_if_value
 from src.models.live_state import LiveMatchState
 from src.backtest.logger import init_db, log_snapshot
 
 def run_live_pipeline():
     init_db()
     print("\n🚀 [AUTOMATIC RUN] A iniciar varredura de jogos em direto...")
-    
+
     try:
         fetcher = BSDLiveFetcher()
     except Exception as e:
         print(f"⚠️ Erro ao inicializar o fetcher (verificar credenciais/mock): {e}")
         return
+
+    try:
+        odds_provider = APIOddsProvider()
+    except Exception as e:
+        print(f"⚠️ Odds provider indisponível (alertas +EV desativados nesta run): {e}")
+        odds_provider = None
 
     engine = LiveGoalEngine()
     events = fetcher.get_live_events()
@@ -105,8 +114,31 @@ def run_live_pipeline():
         away = match_data['away_team']
         min_curr = match_data['current_minute']
         score = f"{match_data['home_score']}-{match_data['away_score']}"
-        
+
         print(f"🏟️ {home} {score} {away} ({min_curr}') -> P(Golo 15m): {p_goal_15m*100:.1f}%")
+
+        if odds_provider is not None and isinstance(prediction, dict):
+            try:
+                odds_response = odds_provider.get_live_odds(match_data["match_id"])
+                bookie_odd = odds_response["odds"]["over_15_goals"]
+
+                decision = evaluate_live_market(
+                    probability_pct=prediction.get("next_goal_probability", 0.0),
+                    bookie_odd=bookie_odd,
+                    market="NEXT GOAL (15m)"
+                )
+
+                if notify_if_value(
+                    match_id=match_data["match_id"],
+                    home_team=home,
+                    away_team=away,
+                    minute=min_curr,
+                    score=score,
+                    decision=decision
+                ):
+                    print(f"📲 Alerta +EV enviado para {home} vs {away}.")
+            except Exception as e:
+                print(f"⚠️ Não foi possível avaliar valor/odds para match_id={match_data.get('match_id')}: {e}")
 
 if __name__ == "__main__":
     run_live_pipeline()
