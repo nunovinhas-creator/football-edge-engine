@@ -1,0 +1,19 @@
+{
+  "model_name": "LightGBM",
+  "calibration_method": "sigmoid",
+  "calibration_succeeded": true,
+  "before": {
+    "n_oof_samples": 2013,
+    "brier_score": 0.23990285072673992,
+    "log_loss": 0.6629014470055606
+  },
+  "after": {
+    "n_oof_samples": 2013,
+    "brier_score": 0.20238742516468786,
+    "log_loss": 0.5823796899448339
+  },
+  "oof_populations_comparable": true,
+  "comparison_warning": null,
+  "verdict_brier": "melhorou",
+  "verdict_log_loss": "melhorou"
+}

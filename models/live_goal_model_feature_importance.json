@@ -1,0 +1,80 @@
+{
+  "RandomForest": {
+    "current_minute": 0.41916407458477734,
+    "home_score": 0.08384882399660727,
+    "away_score": 0.058506838786809776,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 0.4384802626318057,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  },
+  "ExtraTrees": {
+    "current_minute": 0.3606412704429948,
+    "home_score": 0.14298804859089603,
+    "away_score": 0.10168390224927984,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 0.3946867787168293,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  },
+  "BalancedRandomForest": {
+    "current_minute": 0.4278119395443908,
+    "home_score": 0.09002339993642472,
+    "away_score": 0.060461162246365385,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 0.4217034982728191,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  },
+  "GradientBoosting": {
+    "current_minute": 0.3849945465493079,
+    "home_score": 0.12867317846375065,
+    "away_score": 0.09036644133169325,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 0.3959658336552483,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  },
+  "LightGBM": {
+    "current_minute": 627.8,
+    "home_score": 278.8,
+    "away_score": 252.0,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 745.4,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  },
+  "HistGradientBoosting": {
+    "current_minute": 0.05765729767281151,
+    "home_score": -0.0035024223917279823,
+    "away_score": -0.0034659468966409105,
+    "dangerous_attacks_10m": 0.0,
+    "shots_on_target_10m": 0.0,
+    "corners_10m": 0.0,
+    "live_odd_over": 0.0,
+    "pressure": 0.04222458061965784,
+    "live_xg": 0.0,
+    "red_cards": 0.0,
+    "possession": 0.0
+  }
+}

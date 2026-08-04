@@ -47,7 +47,7 @@ def render_live_dashboard(
         live_analysis["pressure"]
     )
 
-    ml_res = ml_predictor.predict(match_state)
+    ml_res = ml_predictor.predict(match_state, live_odd_over=bookie_over15_odd)
 
     live_bet = evaluate_live_market(
         probability_pct=live_analysis["next_goal_probability"],

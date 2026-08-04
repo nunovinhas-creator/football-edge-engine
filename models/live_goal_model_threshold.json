@@ -1,0 +1,8 @@
+{
+  "threshold": 0.2,
+  "optimization_metric": "f1",
+  "optimization_metric_value": 0.5308964316797214,
+  "model_name": "LightGBM",
+  "n_oof_samples": 2013,
+  "note": null
+}

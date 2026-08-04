@@ -1,0 +1,191 @@
+{
+  "dataset_path": "data/training_dataset.csv",
+  "shape": {
+    "rows": 2013,
+    "columns": 13
+  },
+  "columns": [
+    "match_id",
+    "current_minute",
+    "home_score",
+    "away_score",
+    "dangerous_attacks_10m",
+    "shots_on_target_10m",
+    "corners_10m",
+    "live_odd_over",
+    "pressure",
+    "live_xg",
+    "red_cards",
+    "possession",
+    "goal_in_next_15m"
+  ],
+  "dtypes": {
+    "match_id": "int64",
+    "current_minute": "int64",
+    "home_score": "int64",
+    "away_score": "int64",
+    "dangerous_attacks_10m": "int64",
+    "shots_on_target_10m": "int64",
+    "corners_10m": "int64",
+    "live_odd_over": "float64",
+    "pressure": "float64",
+    "live_xg": "float64",
+    "red_cards": "int64",
+    "possession": "float64",
+    "goal_in_next_15m": "int64"
+  },
+  "target_column": "goal_in_next_15m",
+  "feature_stats": {
+    "match_id": {
+      "min": 46417.0,
+      "max": 224849.0,
+      "mean": 208381.35370094387,
+      "std": 36930.49332750115,
+      "n_unique": 96
+    },
+    "current_minute": {
+      "min": 0.0,
+      "max": 115.0,
+      "mean": 43.38748137108793,
+      "std": 28.39500352026358,
+      "n_unique": 105
+    },
+    "home_score": {
+      "min": 0.0,
+      "max": 7.0,
+      "mean": 0.8688524590163934,
+      "std": 1.0759842341582988,
+      "n_unique": 8
+    },
+    "away_score": {
+      "min": 0.0,
+      "max": 6.0,
+      "mean": 0.6572280178837556,
+      "std": 0.9087292955410038,
+      "n_unique": 7
+    },
+    "dangerous_attacks_10m": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "n_unique": 1
+    },
+    "shots_on_target_10m": {
+      "min": 1.0,
+      "max": 1.0,
+      "mean": 1.0,
+      "std": 0.0,
+      "n_unique": 1
+    },
+    "corners_10m": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "n_unique": 1
+    },
+    "live_odd_over": {
+      "min": 1.85,
+      "max": 1.85,
+      "mean": 1.8500000000000005,
+      "std": 4.441995562823409e-16,
+      "n_unique": 1
+    },
+    "pressure": {
+      "min": 10.55,
+      "max": 40.0,
+      "mean": 24.42507699950323,
+      "std": 7.468258774426722,
+      "n_unique": 243
+    },
+    "live_xg": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "n_unique": 1
+    },
+    "red_cards": {
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "std": 0.0,
+      "n_unique": 1
+    },
+    "possession": {
+      "min": 50.0,
+      "max": 50.0,
+      "mean": 50.0,
+      "std": 0.0,
+      "n_unique": 1
+    }
+  },
+  "correlation_with_target": {
+    "match_id": 0.00010404939489013618,
+    "current_minute": 0.05105305616353267,
+    "home_score": 0.06658419919759553,
+    "away_score": 0.03315778510956776,
+    "dangerous_attacks_10m": null,
+    "shots_on_target_10m": null,
+    "corners_10m": null,
+    "live_odd_over": 1.1814259785983716e-16,
+    "pressure": 0.06477707549188404,
+    "live_xg": null,
+    "red_cards": null,
+    "possession": null
+  },
+  "single_feature_auc": [
+    {
+      "feature": "match_id",
+      "auc": 0.6754345711191468
+    },
+    {
+      "feature": "pressure",
+      "auc": 0.6456432753905175
+    },
+    {
+      "feature": "current_minute",
+      "auc": 0.6285541217716918
+    },
+    {
+      "feature": "home_score",
+      "auc": 0.5416766093357074
+    },
+    {
+      "feature": "dangerous_attacks_10m",
+      "auc": 0.5
+    },
+    {
+      "feature": "shots_on_target_10m",
+      "auc": 0.5
+    },
+    {
+      "feature": "corners_10m",
+      "auc": 0.5
+    },
+    {
+      "feature": "live_odd_over",
+      "auc": 0.5
+    },
+    {
+      "feature": "live_xg",
+      "auc": 0.5
+    },
+    {
+      "feature": "red_cards",
+      "auc": 0.5
+    },
+    {
+      "feature": "possession",
+      "auc": 0.5
+    },
+    {
+      "feature": "away_score",
+      "auc": 0.47958846528019966
+    }
+  ],
+  "leakage_threshold": 0.9,
+  "possible_leakage_features": [],
+  "conclusion": "Nenhuma feature isolada excedeu o limiar de AUC (0.9). Sem indicios de leakage evidente."
+}
