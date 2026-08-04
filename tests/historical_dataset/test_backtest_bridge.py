@@ -187,6 +187,80 @@ class TestDeriveH2H(unittest.TestCase):
         self.assertEqual(derive_h2h(self._df(), "A", "B", pd.NaT), {})
 
 
+class TestDeriveH2HTeamStrength(unittest.TestCase):
+    """
+    Melhoria #5 (auditoria matemática): `derive_h2h` também injeta a força
+    de ataque/defesa por equipa (`src.engine.team_strength`, Nível 0 da
+    cascata de `lambda_estimator.py`), calculada a partir de TODOS os
+    jogos anteriores de cada equipa no dataset do Historical Dataset
+    Builder — não só dos confrontos diretos entre as duas equipas do
+    próximo jogo.
+    """
+
+    def _df(self):
+        return pd.DataFrame([
+            {"home_team": "A", "away_team": "B", "home_score": 2, "away_score": 1,
+             "date": pd.Timestamp("2023-01-01")},
+            {"home_team": "B", "away_team": "A", "home_score": 0, "away_score": 0,
+             "date": pd.Timestamp("2023-06-01")},
+            {"home_team": "C", "away_team": "D", "home_score": 5, "away_score": 0,
+             "date": pd.Timestamp("2023-03-01")},
+        ])
+
+    def test_no_history_at_all_keeps_dict_empty_no_team_strength_keys(self):
+        # Regressão: sem qualquer jogo anterior de A ou B, nem H2H nem
+        # força por equipa têm base -- o dicionário continua vazio, como
+        # antes desta melhoria (nunca inventa uma força a partir do nada).
+        h2h = derive_h2h(self._df(), "A", "B", pd.Timestamp("2022-01-01"))
+        self.assertEqual(h2h, {})
+
+    def test_team_strength_present_when_pairwise_h2h_also_present(self):
+        h2h = derive_h2h(self._df(), "A", "B", pd.Timestamp("2023-12-31"))
+        self.assertIn("team_strength_home_goals", h2h)
+        self.assertIn("team_strength_away_goals", h2h)
+        self.assertIn("team_strength_sample_size", h2h)
+        self.assertGreater(h2h["team_strength_sample_size"], 0.0)
+
+    def test_team_strength_available_even_without_any_direct_meeting(self):
+        # Este é o ganho concreto da Melhoria #5: A e E NUNCA se
+        # defrontaram no dataset (sem H2H possível), mas ambas têm
+        # histórico próprio -- a força por equipa continua disponível,
+        # em vez de cair direto no prior fixo de liga.
+        df = pd.concat([
+            self._df(),
+            pd.DataFrame([
+                {"home_team": "E", "away_team": "F", "home_score": 3, "away_score": 1,
+                 "date": pd.Timestamp("2023-02-01")},
+            ]),
+        ], ignore_index=True)
+
+        h2h = derive_h2h(df, "A", "E", pd.Timestamp("2023-12-31"))
+
+        self.assertNotIn("total_matches", h2h)  # sem H2H direto entre A e E
+        self.assertIn("team_strength_home_goals", h2h)
+        self.assertIn("team_strength_away_goals", h2h)
+
+    def test_no_leakage_team_strength_ignores_matches_on_or_after_before(self):
+        # Sem o 2º confronto A/B (2023-06-01, um empate 0-0), o ataque de A
+        # calculado a partir de A/B seria só o do 1º jogo (2 golos). Cortar
+        # em 2023-03-15 exclui o 2º confronto, tal como corta o H2H
+        # pairwise (ver test_future_meetings_are_excluded_no_lookahead).
+        h2h_early = derive_h2h(self._df(), "A", "B", pd.Timestamp("2023-03-15"))
+        h2h_late = derive_h2h(self._df(), "A", "B", pd.Timestamp("2023-12-31"))
+        self.assertNotEqual(
+            h2h_early["team_strength_home_goals"],
+            h2h_late["team_strength_home_goals"],
+        )
+
+    def test_team_strength_feeds_into_estimate_lambda_end_to_end(self):
+        from src.engine.lambda_estimator import estimate_lambda
+
+        h2h = derive_h2h(self._df(), "A", "B", pd.Timestamp("2023-12-31"))
+        lambda_home, mu_away = estimate_lambda(h2h)
+        self.assertGreater(lambda_home, 0.0)
+        self.assertGreater(mu_away, 0.0)
+
+
 class TestModelProbabilitiesFromDixonColes(unittest.TestCase):
     """
     `model_probabilities_from_dixon_coles` não recalcula nem substitui o

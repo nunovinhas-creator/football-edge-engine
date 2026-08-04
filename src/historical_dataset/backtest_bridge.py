@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, Optional, Union
 import pandas as pd
 
 from src.engine.lambda_estimator import estimate_lambda
+from src.engine.team_strength import estimate_team_strength_priors
 from src.engine.value import estimate_pregame_probabilities
 from src.historical_dataset.storage import to_dataframe
 
@@ -173,52 +174,71 @@ def derive_h2h(df: pd.DataFrame, home_team: str, away_team: str, before: Any) ->
     Não faz nenhum pedido adicional à BSD API (o Historical Dataset
     Builder não devolve `head_to_head` por jogo) e não tem fuga de
     informação: `before` é sempre a data do jogo a avaliar, e só entram
-    confrontos com data estritamente anterior. Sem confrontos diretos
-    anteriores (equipas que nunca se defrontaram no dataset, ou jogo sem
-    data), devolve `{}` — `estimate_lambda({})` já trata esse caso de
-    forma defensiva (cai para o prior de liga), sem alterações aqui.
+    confrontos (ou jogos de cada equipa, ver abaixo) com data estritamente
+    anterior. Sem confrontos diretos anteriores nem força por equipa
+    calculável (equipas que nunca jogaram no dataset antes de `before`, ou
+    jogo sem data), devolve `{}` — `estimate_lambda({})` já trata esse
+    caso de forma defensiva (cai para o prior de liga), sem alterações
+    aqui.
+
+    Melhoria #5 (auditoria matemática): além dos confrontos diretos entre
+    `home_team` e `away_team`, também tenta calcular a força de
+    ataque/defesa de CADA equipa (`src.engine.team_strength`, Nível 0 da
+    cascata de `lambda_estimator.py`) a partir de TODOS os jogos
+    anteriores de cada equipa já no dataset (não só os confrontos diretos
+    entre estas duas) — sem fuga de informação (mesmo corte por `before`).
+    Isto fica disponível mesmo quando as duas equipas nunca se defrontaram
+    diretamente, exatamente o caso em que o estimador só tinha, até agora,
+    o prior fixo de liga como alternativa.
     """
     if before is None or pd.isna(before):
         return {}
+
+    h2h: Dict[str, Any] = {}
 
     pair_mask = (
         ((df["home_team"] == home_team) & (df["away_team"] == away_team))
         | ((df["home_team"] == away_team) & (df["away_team"] == home_team))
     )
     prior = df.loc[pair_mask & df["date"].notna() & (df["date"] < before)].sort_values("date")
-    if prior.empty:
-        return {}
 
-    recent_matches = []
-    home_goals_total = 0.0
-    away_goals_total = 0.0
-    home_wins = 0
-    away_wins = 0
-    for _, row in prior.iterrows():
-        h_goals, a_goals = _reorient_score(row, home_team, away_team)
-        match_date = row["date"]
-        recent_matches.append({
-            "home_goals": h_goals,
-            "away_goals": a_goals,
-            "date": match_date.isoformat() if hasattr(match_date, "isoformat") else str(match_date),
+    if not prior.empty:
+        recent_matches = []
+        home_goals_total = 0.0
+        away_goals_total = 0.0
+        home_wins = 0
+        away_wins = 0
+        for _, row in prior.iterrows():
+            h_goals, a_goals = _reorient_score(row, home_team, away_team)
+            match_date = row["date"]
+            recent_matches.append({
+                "home_goals": h_goals,
+                "away_goals": a_goals,
+                "date": match_date.isoformat() if hasattr(match_date, "isoformat") else str(match_date),
+            })
+            home_goals_total += h_goals
+            away_goals_total += a_goals
+            if h_goals > a_goals:
+                home_wins += 1
+            elif a_goals > h_goals:
+                away_wins += 1
+
+        total_matches = len(recent_matches)
+        h2h.update({
+            "total_matches": total_matches,
+            "home_goals": home_goals_total,
+            "away_goals": away_goals_total,
+            "avg_total_goals": (home_goals_total + away_goals_total) / total_matches,
+            "home_win_rate": 100.0 * home_wins / total_matches,
+            "away_win_rate": 100.0 * away_wins / total_matches,
+            "recent_matches": recent_matches,
         })
-        home_goals_total += h_goals
-        away_goals_total += a_goals
-        if h_goals > a_goals:
-            home_wins += 1
-        elif a_goals > h_goals:
-            away_wins += 1
 
-    total_matches = len(recent_matches)
-    return {
-        "total_matches": total_matches,
-        "home_goals": home_goals_total,
-        "away_goals": away_goals_total,
-        "avg_total_goals": (home_goals_total + away_goals_total) / total_matches,
-        "home_win_rate": 100.0 * home_wins / total_matches,
-        "away_win_rate": 100.0 * away_wins / total_matches,
-        "recent_matches": recent_matches,
-    }
+    team_strength_priors = estimate_team_strength_priors(df, home_team, away_team, before)
+    if team_strength_priors is not None:
+        h2h.update(team_strength_priors)
+
+    return h2h
 
 
 def model_probabilities_from_dixon_coles(records) -> Dict[Any, Dict[str, float]]:

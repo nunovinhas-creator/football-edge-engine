@@ -22,12 +22,24 @@ no repositório para ponderação exponencial de séries temporais, referida
 em `docs/AUDIT_MATEMATICA.md` §12.2 como "pronta mas não ligada ao
 Dixon-Coles".
 
-Não estima ataque/defesa por MLE sobre o histórico completo da liga (isso
-exigiria uma fonte de dados que o projeto não recolhe hoje — ver
-`docs/05_lambda_estimator.md`, secção "Limitations"). O que este módulo
-faz é usar TODA a granularidade dos dados de confrontos diretos (H2H) já
-devolvidos pela API, em vez de apenas a média agregada, com encolhimento
-estatístico (`shrinkage`) para a média de liga quando a amostra é pequena.
+Não estima ataque/defesa por MLE sobre o histórico completo da liga. O que
+este módulo faz é usar TODA a granularidade dos dados de confrontos
+diretos (H2H) já devolvidos pela API, em vez de apenas a média agregada,
+com encolhimento estatístico (`shrinkage`) para um prior quando a amostra
+é pequena.
+
+Melhoria #5 (auditoria matemática): esse prior deixou de ser sempre a
+mesma constante fixa de liga. Quando `head_to_head` traz uma força de
+ataque/defesa por equipa — calculada pelo Historical Dataset Builder já
+existente (`src/engine/team_strength.py`, injetada por
+`src.historical_dataset.backtest_bridge.derive_h2h`, nunca por este
+módulo nem por uma API nova) — o encolhimento passa a ser feito para
+essa força por equipa em vez do prior fixo (ver `_resolve_dynamic_prior`
+abaixo). A força por equipa é, ela própria, primeiro encolhida para o
+mesmo prior fixo de sempre, conforme a sua amostra — por isso o
+comportamento anterior (prior fixo puro) é preservado exatamente quando
+essa informação não está disponível (ver `docs/05_lambda_estimator.md`,
+secção "Limitations", agora superada por este módulo).
 
 O Dixon-Coles em si (`tau`, `dixon_coles_simulate_match`,
 `calculate_fractional_kelly`) não é tocado por este módulo.
@@ -52,9 +64,11 @@ from src.engine.pregame_lambda import (
 # Não deriva de um novo número inventado: é o mesmo DEFAULT_AVG_TOTAL_GOALS
 # (2.5 golos/jogo) já usado por `pregame_lambda.py` quando não há H2H,
 # repartido pela mesma vantagem de casa (`HOME_ADVANTAGE_SHARE`) já assumida
-# nesse módulo. Serve de "prior" para o encolhimento estatístico abaixo — o
-# projeto não tem, hoje, uma fonte de média de liga dinâmica por competição
-# (ver `docs/05_lambda_estimator.md`, secção "Limitations").
+# nesse módulo. Serve de prior de ÚLTIMO RECURSO (Nível 3) para o
+# encolhimento estatístico abaixo — usado tal e qual quando não há força
+# por equipa disponível (ver `_resolve_dynamic_prior`), e como o próprio
+# prior para o qual a força por equipa é encolhida quando essa amostra é
+# pequena (ver `src/engine/team_strength.py`).
 LEAGUE_PRIOR_HOME_GOALS = round(DEFAULT_AVG_TOTAL_GOALS * (0.5 + HOME_ADVANTAGE_SHARE), 3)
 LEAGUE_PRIOR_AWAY_GOALS = round(DEFAULT_AVG_TOTAL_GOALS * (0.5 - HOME_ADVANTAGE_SHARE), 3)
 
@@ -275,6 +289,53 @@ def _split_from_h2h_goal_totals(h2h: Dict[str, Any]) -> Optional[Tuple[float, fl
     return home_avg, away_avg, total_matches
 
 
+def _resolve_dynamic_prior(h2h: Dict[str, Any]) -> Tuple[float, float]:
+    """
+    Nível 0 da cascata (Melhoria #5 da auditoria matemática — ver
+    `src/engine/team_strength.py` e `docs/05_lambda_estimator.md`):
+    resolve o prior usado no encolhimento (`_shrink_to_prior`) em
+    `estimate_lambda_detailed`, no lugar do prior fixo de liga sempre que
+    houver uma força por equipa disponível.
+
+    `h2h` pode trazer, opcionalmente, as chaves `team_strength_home_goals`
+    / `team_strength_away_goals` / `team_strength_sample_size` —
+    preenchidas por `src.historical_dataset.backtest_bridge.derive_h2h` a
+    partir do Historical Dataset Builder, nunca calculadas por este
+    módulo (que continua sem qualquer dependência de `team_strength.py`,
+    para preservar o seu contrato público e evitar import circular).
+
+    Quando presentes, a força por equipa é ela própria encolhida para o
+    prior fixo de liga, conforme a sua amostra (`_shrink_to_prior`, a
+    mesma função, sem fórmula nova) — uma força vinda de 1-2 jogos
+    históricos da equipa não deve substituir o prior fixo tão
+    abruptamente como uma força vinda de dezenas de jogos substituiria.
+    O resultado é o novo prior "estabilizado" (Nível 0) para o qual o
+    H2H desta cascata (Nível 1) é encolhido (Nível 2).
+
+    Quando ausentes, ausentes parcialmente, ou inválidas (negativas) —
+    todo o código e todos os chamadores anteriores a esta melhoria, e
+    qualquer chamador que não passe por `derive_h2h` — devolve
+    exatamente `(LEAGUE_PRIOR_HOME_GOALS, LEAGUE_PRIOR_AWAY_GOALS)`, o
+    mesmo prior fixo de sempre (Nível 3), preservando 100% o
+    comportamento existente.
+    """
+    home_strength = _safe_float(h2h.get("team_strength_home_goals"))
+    away_strength = _safe_float(h2h.get("team_strength_away_goals"))
+    if (
+        home_strength is None
+        or away_strength is None
+        or home_strength < 0
+        or away_strength < 0
+    ):
+        return LEAGUE_PRIOR_HOME_GOALS, LEAGUE_PRIOR_AWAY_GOALS
+
+    strength_sample_size = _safe_float(h2h.get("team_strength_sample_size")) or 0.0
+
+    prior_home = _shrink_to_prior(home_strength, strength_sample_size, LEAGUE_PRIOR_HOME_GOALS)
+    prior_away = _shrink_to_prior(away_strength, strength_sample_size, LEAGUE_PRIOR_AWAY_GOALS)
+    return prior_home, prior_away
+
+
 def _split_from_avg_total_goals_or_prior(h2h: Dict[str, Any]) -> Tuple[float, float, float]:
     """
     Nível C/D: sem dados suficientes para uma repartição empírica por
@@ -322,8 +383,9 @@ def estimate_lambda_detailed(h2h: Optional[Dict[str, Any]]) -> LambdaEstimate:
 
     raw_home_avg, raw_away_avg, sample_size = split
 
-    shrunk_home = _shrink_to_prior(raw_home_avg, sample_size, LEAGUE_PRIOR_HOME_GOALS)
-    shrunk_away = _shrink_to_prior(raw_away_avg, sample_size, LEAGUE_PRIOR_AWAY_GOALS)
+    prior_home_goals, prior_away_goals = _resolve_dynamic_prior(h2h)
+    shrunk_home = _shrink_to_prior(raw_home_avg, sample_size, prior_home_goals)
+    shrunk_away = _shrink_to_prior(raw_away_avg, sample_size, prior_away_goals)
 
     lambda_home = min(MAX_LAMBDA, max(MIN_LAMBDA, round(shrunk_home, 3)))
     mu_away = min(MAX_LAMBDA, max(MIN_LAMBDA, round(shrunk_away, 3)))
