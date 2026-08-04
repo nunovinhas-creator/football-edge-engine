@@ -14,6 +14,7 @@ from datetime import datetime
 
 from src.api.live_fetcher import BSDLiveFetcher
 from src.live.engine import LiveGoalEngine
+from src.models.live_state import LiveMatchState
 
 # Configuração da página Web
 st.set_page_config(
@@ -94,7 +95,26 @@ with tab1:
                 'live_odd_over': 2.10
             }
 
-        p_goal_15m = engine.predict_next_goal_probability(match_data)
+        match_state = LiveMatchState(
+            minute=match_data.get('current_minute', 0),
+            home_score=match_data.get('home_score', 0),
+            away_score=match_data.get('away_score', 0),
+            home_xg_last5=match_data.get('home_xg_last5', 1.5),
+            away_conceded_xg_last5=match_data.get('away_conceded_xg_last5', 1.2),
+            home_style=match_data.get('home_style', 'balanced'),
+            dangerous_attacks_10m=match_data.get('dangerous_attacks_10m', 0),
+            shots_on_target_10m=match_data.get('shots_on_target_10m', 0),
+            shots_10m=match_data.get('shots_10m', 0),
+            corners_10m=match_data.get('corners_10m', 0),
+            possession=match_data.get('home_possession', 50.0),
+            previous_pressure=match_data.get('previous_pressure', 0.0),
+            goals_last_15=match_data.get('goals_last_15', 0),
+            last_goal_minute=match_data.get('last_goal_minute'),
+            red_cards=match_data.get('red_cards', 0),
+            game_state=match_data.get('game_state', 'unknown'),
+        )
+        live_result = engine.predict_next_goal_probability(match_state)
+        p_goal_15m = live_result['next_goal_probability'] / 100.0
         fair_odd = 1.0 / p_goal_15m if p_goal_15m > 0 else 99.0
         bookie_odd = match_data.get('live_odd_over', 1.85)
         
