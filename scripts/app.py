@@ -84,8 +84,8 @@ st.markdown(
         border-radius: 16px; padding: 28px 24px; text-align: center;
         border: 2px solid rgba(255,255,255,0.15); margin-bottom: 10px;
     }
-    .fee-decision-label { font-size: 2.4rem; font-weight: 800; line-height: 1.1; }
-    .fee-decision-reason { font-size: 0.95rem; opacity: 0.85; margin-top: 6px; }
+    .fee-decision-label { font-size: 2.4rem; font-weight: 800; line-height: 1.1; color: #ffffff !important; }
+    .fee-decision-reason { font-size: 0.95rem; opacity: 0.85; margin-top: 6px; color: #ffffff !important; }
     .fee-section-title {
         font-size: 1.05rem; font-weight: 700; margin: 22px 0 8px 0;
         border-left: 4px solid #1DB954; padding-left: 10px;
