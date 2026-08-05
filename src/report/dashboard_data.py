@@ -264,6 +264,23 @@ def engine_score_badge(score: float) -> Tuple[str, str]:
     return "Fraco", "off"
 
 
+def engine_score_tier(score: float) -> Tuple[str, str, str]:
+    """
+    Sprint 1B — apenas apresentação: agrupa o MESMO Engine Score já
+    calculado por `compute_engine_score` (não recalcula nada) em 4 faixas
+    visuais (emoji, rótulo, cor) para o badge grande do Dashboard. Não
+    substitui `engine_score_badge` (continua a controlar a cor do gauge
+    Plotly já existente) nem influencia nenhuma decisão de aposta.
+    """
+    if score >= 85:
+        return "🏆", "Elite", "elite"
+    if score >= 70:
+        return "🟢", "Forte", "ok"
+    if score >= 50:
+        return "🟡", "Moderado", "warn"
+    return "🔴", "Fraco", "off"
+
+
 # ---------------------------------------------------------------------------
 # Snapshot completo de um jogo em direto
 # ---------------------------------------------------------------------------

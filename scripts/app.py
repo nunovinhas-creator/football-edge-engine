@@ -33,6 +33,7 @@ from src.report.dashboard_data import (
     build_live_alert_monitor_rows,
     build_match_snapshot,
     count_alerts_sent_today,
+    engine_score_tier,
     extract_competition,
     extract_status_label,
     get_bsd_status,
@@ -66,53 +67,178 @@ _BADGE_COLORS = {
     "ok": "#0f5132",
     "warn": "#664d03",
     "off": "#58151c",
+    "watch": "#7a3a05",
+    "info": "#0c3d66",
+    "purple": "#3b1670",
+    "fire": "#7a2a0f",
+    "elite": "#4a3200",
 }
 _BADGE_BORDERS = {
     "ok": "#1DB954",
     "warn": "#e6b800",
     "off": "#e5484d",
+    "watch": "#ff9800",
+    "info": "#3b82f6",
+    "purple": "#7c3aed",
+    "fire": "#ff7043",
+    "elite": "#ffc531",
 }
+
+# ---------------------------------------------------------------------------
+# Sprint 1B — Identidade visual consistente (Bloomberg/TradingView-style).
+# Apenas CSS/apresentação: nenhuma cor aqui influencia qualquer decisão,
+# threshold, probabilidade, edge, EV, Kelly ou lambda — só o rótulo já
+# calculado por `src.report.dashboard_data` (ex.: decision_badge devolve
+# "ok"/"warn"/"off", já mapeado 1:1 para verde/amarelo/vermelho).
+#   verde   -> 🟢 APOSTAR AGORA (e sinais fortes dos modelos)
+#   amarelo -> 🟡 AGUARDAR
+#   laranja -> 👁️ EM OBSERVAÇÃO (identidade da zona, não da decisão)
+#   vermelho-> 🔴 NÃO APOSTAR
+#   azul    -> ℹ️ Informação / estado do sistema (cabeçalho)
+#   roxo    -> 📊 Backtesting / Validação Histórica
+#   fogo    -> 🚨 Goal Imminent
+# ---------------------------------------------------------------------------
 
 st.markdown(
     """
     <style>
+    :root {
+        --fee-green: #1DB954;
+        --fee-yellow: #e6b800;
+        --fee-orange: #ff9800;
+        --fee-red: #e5484d;
+        --fee-blue: #3b82f6;
+        --fee-purple: #7c3aed;
+        --fee-fire: #ff7043;
+        --fee-elite: #ffc531;
+        --fee-radius: 14px;
+        --fee-shadow: 0 1px 3px rgba(0,0,0,0.10), 0 1px 2px rgba(0,0,0,0.08);
+        --fee-gap: 14px;
+    }
+
+    /* -- Grelha: todas as colunas de uma linha esticam à mesma altura -- */
+    div[data-testid="stHorizontalBlock"] { align-items: stretch; gap: var(--fee-gap); }
+    div[data-testid="stHorizontalBlock"] > div[data-testid="column"] { display: flex; }
+    div[data-testid="column"] > div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="column"] > div[data-testid="stVerticalBlock"] { width: 100%; }
+
+    /* -- Pills de estado (cabeçalho, badges pequenos) -- */
     .fee-pill {
         display: inline-block; padding: 4px 12px; border-radius: 999px;
         font-size: 0.78rem; font-weight: 600; margin-right: 8px; margin-bottom: 6px;
         border: 1px solid rgba(255,255,255,0.15); color: #ffffff !important;
     }
     .fee-pill * { color: #ffffff !important; }
+
+    /* -- Cartão uniforme: MESMA altura, padding, raio, sombra e espaçamento -- */
     .fee-card {
-        background-color: rgba(127,127,127,0.08); border-radius: 12px;
-        padding: 16px 18px; border: 1px solid rgba(127,127,127,0.18);
-        margin-bottom: 12px; height: 100%;
+        background-color: rgba(127,127,127,0.08); border-radius: var(--fee-radius);
+        padding: 18px 20px; border: 1px solid rgba(127,127,127,0.18);
+        margin-bottom: var(--fee-gap); height: 100%;
+        box-shadow: var(--fee-shadow);
+        box-sizing: border-box;
     }
+
+    /* -- Cartões de Decisão: os MAIORES do Dashboard -- */
     .fee-decision-box {
-        border-radius: 16px; padding: 28px 24px; text-align: center;
-        border: 2px solid rgba(255,255,255,0.15); margin-bottom: 10px;
+        border-radius: 20px; padding: 40px 28px; text-align: center;
+        border: 3px solid rgba(255,255,255,0.15); margin-bottom: 10px;
+        box-shadow: var(--fee-shadow); min-height: 200px;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
     }
-    .fee-decision-label { font-size: 2.4rem; font-weight: 800; line-height: 1.1; color: #ffffff !important; }
-    .fee-decision-reason { font-size: 0.95rem; opacity: 0.85; margin-top: 6px; color: #ffffff !important; }
+    .fee-decision-label { font-size: 3rem; font-weight: 900; line-height: 1.1; color: #ffffff !important; letter-spacing: 0.3px; }
+    .fee-decision-reason { font-size: 1rem; opacity: 0.88; margin-top: 10px; color: #ffffff !important; max-width: 480px; }
+
+    /* -- Badge grande do Engine Score -- */
+    .fee-score-badge {
+        border-radius: var(--fee-radius); padding: 18px 16px; text-align: center;
+        border: 2px solid rgba(255,255,255,0.15); box-shadow: var(--fee-shadow);
+        height: 100%; box-sizing: border-box;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+    }
+    .fee-score-icon { font-size: 2.4rem; line-height: 1; }
+    .fee-score-value { font-size: 2.6rem; font-weight: 900; line-height: 1.05; color: #ffffff !important; margin-top: 2px; }
+    .fee-score-label { font-size: 0.95rem; font-weight: 700; opacity: 0.9; color: #ffffff !important; margin-top: 2px; }
+    .fee-score-caption { font-size: 0.72rem; opacity: 0.75; color: #ffffff !important; margin-top: 6px; }
+
     .fee-section-title {
-        font-size: 1.05rem; font-weight: 700; margin: 22px 0 8px 0;
-        border-left: 4px solid #1DB954; padding-left: 10px;
+        font-size: 1.05rem; font-weight: 700; margin: 26px 0 10px 0;
+        border-left: 4px solid var(--fee-green); padding-left: 10px;
     }
-    .fee-explain li { margin-bottom: 6px; }
-    .fee-why-col { padding: 10px 4px; }
-    .fee-why-title { font-weight: 700; margin-bottom: 6px; }
+
+    /* -- Modelos: 4 cartões com layout/tamanho/alinhamento idênticos -- */
+    .fee-model-card {
+        background-color: rgba(127,127,127,0.08); border-radius: var(--fee-radius);
+        padding: 18px 20px; border: 1px solid rgba(127,127,127,0.18);
+        box-shadow: var(--fee-shadow); box-sizing: border-box;
+        height: 100%; min-height: 168px;
+        display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .fee-model-title { font-weight: 700; }
+    .fee-model-market { opacity: 0.7; font-size: 0.78rem; margin-bottom: 6px; min-height: 2.1em; }
+    .fee-model-value { font-size: 1.8rem; font-weight: 800; }
+    .fee-model-footnote { opacity: 0.75; font-size: 0.78rem; min-height: 1.2em; }
+
+    /* -- Live Stats: grelha uniforme (não lista) -- */
+    .fee-stats-grid {
+        display: grid; grid-template-columns: repeat(5, 1fr); gap: var(--fee-gap);
+        margin-bottom: var(--fee-gap);
+    }
+    .fee-stat-tile {
+        background-color: rgba(127,127,127,0.08); border-radius: var(--fee-radius);
+        border: 1px solid rgba(127,127,127,0.18); box-shadow: var(--fee-shadow);
+        padding: 14px 14px; box-sizing: border-box; min-height: 104px;
+        display: flex; flex-direction: column; justify-content: space-between;
+    }
+    .fee-stat-label { font-size: 0.76rem; opacity: 0.72; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+    .fee-stat-value { font-size: 1.5rem; font-weight: 800; margin-top: 2px; }
+    .fee-stat-bar-track {
+        width: 100%; height: 6px; border-radius: 999px; background: rgba(127,127,127,0.25);
+        margin-top: 8px; overflow: hidden;
+    }
+    .fee-stat-bar-fill { height: 100%; border-radius: 999px; }
+
+    /* -- Explainability: bloco tipo relatório -- */
+    .fee-report {
+        border-radius: var(--fee-radius); border: 1px solid rgba(127,127,127,0.22);
+        box-shadow: var(--fee-shadow); padding: 4px 0 0 0; overflow: hidden; margin-bottom: var(--fee-gap);
+    }
+    .fee-report-header {
+        padding: 12px 20px; font-weight: 700; font-size: 0.95rem;
+        background: rgba(127,127,127,0.10); border-bottom: 1px solid rgba(127,127,127,0.18);
+    }
+    .fee-report-body { padding: 16px 20px 4px 20px; }
+    .fee-why-col {
+        padding: 14px 16px; border-radius: var(--fee-radius); height: 100%; box-sizing: border-box;
+        background-color: rgba(127,127,127,0.06); border: 1px solid rgba(127,127,127,0.16);
+    }
+    .fee-why-title { font-weight: 700; margin-bottom: 8px; }
     .fee-why-col ul { margin: 0; padding-left: 18px; }
     .fee-why-col li { margin-bottom: 6px; }
     .fee-why-summary {
-        margin-top: 6px; padding-top: 10px; border-top: 1px solid rgba(127,127,127,0.25);
+        margin: 16px 20px 16px 20px; padding-top: 12px; border-top: 1px solid rgba(127,127,127,0.25);
         font-style: italic;
     }
+
+    /* -- Botões: mesmo tamanho, mesmo alinhamento -- */
+    div[data-testid="stButton"] > button {
+        border-radius: 10px; font-weight: 700; padding: 0.55rem 1rem;
+    }
+
+    /* -- Estado de "🟡 Em Observação": identidade laranja da ZONA
+       (distinta da cor da decisão em si, que continua verde/amarelo/
+       vermelho conforme `decision_badge`) -- */
+    .fee-card-watching { border-left: 4px solid var(--fee-orange); }
+
+    /* -- Backtesting / Validação Histórica: identidade roxa -- */
+    .fee-backtest-title {
+        font-size: 1.05rem; font-weight: 700; margin: 4px 0 10px 0;
+        border-left: 4px solid var(--fee-purple); padding-left: 10px; color: #a78bfa;
+    }
+
     /* ---------------------------------------------------------------
-       📈 Validação Histórica da Aposta Atual — identidade visual
-       PRÓPRIA, deliberadamente distinta do Backtesting Global (que usa
-       o verde #1DB954 como cor de destaque). Usa roxo/violeta (#7c3aed)
-       para que nunca seja confundida com o painel de Backtesting
-       Global — mesmo objetivo do requisito "nunca reutilizar o mesmo
-       título / nunca misturar as métricas".
+       📈 Validação Histórica da Aposta Atual — identidade visual roxa,
+       partilhada com o Backtesting Global (ambos "família Backtesting").
        --------------------------------------------------------------- */
     .fhv-section {
         background: linear-gradient(180deg, rgba(124,58,237,0.10), rgba(124,58,237,0.03));
@@ -136,6 +262,7 @@ st.markdown(
         background-color: rgba(124,58,237,0.07); border-radius: 12px;
         padding: 14px 16px; border: 1px solid rgba(124,58,237,0.28);
         margin-bottom: 10px; height: 100%;
+        box-shadow: var(--fee-shadow); box-sizing: border-box;
     }
     .fhv-verdict-box {
         border-radius: 18px; padding: 26px 22px; text-align: center;
@@ -153,7 +280,8 @@ st.markdown(
        #ff7043), deliberadamente distinta do "🚨 Live Alert Monitor"
        (sem CSS dedicado, verde #1DB954 herdado do tema base) para nunca
        serem confundidos — mesmo critério já usado para distinguir o
-       painel "📈 Validação Histórica" (roxo) do Backtesting (verde).
+       painel "📈 Validação Histórica" (roxo) do Backtesting (roxo
+       também, mesma família).
        --------------------------------------------------------------- */
     .gid-section {
         background: linear-gradient(180deg, rgba(255,112,67,0.12), rgba(255,112,67,0.03));
@@ -165,6 +293,21 @@ st.markdown(
     }
     .gid-title { font-size: 1.6rem; font-weight: 900; color: #ff7043; margin-bottom: 4px; }
     .gid-subtitle { opacity: 0.85; font-size: 0.88rem; margin-bottom: 14px; }
+
+    /* -- Responsividade: tablet -- */
+    @media (max-width: 1100px) {
+        .fee-stats-grid { grid-template-columns: repeat(3, 1fr); }
+        .fee-decision-label { font-size: 2.3rem; }
+        .fee-score-value { font-size: 2.1rem; }
+    }
+    /* -- Responsividade: ecrãs pequenos / telemóvel -- */
+    @media (max-width: 640px) {
+        .fee-stats-grid { grid-template-columns: repeat(2, 1fr); }
+        .fee-decision-box { padding: 28px 18px; min-height: 160px; }
+        .fee-decision-label { font-size: 1.8rem; }
+        .fee-score-value { font-size: 1.8rem; }
+        .fee-model-card { min-height: unset; }
+    }
     </style>
     """,
     unsafe_allow_html=True,
@@ -175,6 +318,20 @@ def pill(label: str, color_key: str) -> str:
     bg = _BADGE_COLORS.get(color_key, "#333")
     border = _BADGE_BORDERS.get(color_key, "#888")
     return f'<span class="fee-pill" style="background:{bg};border-color:{border};">{label}</span>'
+
+
+_HEADER_COLOR_MAP = {"ok": "info", "warn": "warn", "off": "off"}
+
+
+def header_pill(label: str, color_key: str) -> str:
+    """
+    Pill de estado do sistema (cabeçalho): usa a mesma etiqueta "ok"/
+    "warn"/"off" já devolvida por `get_bsd_status`/`get_telegram_status`/
+    etc. (não recalcula nenhum estado), mas apresenta "ok" a AZUL — a cor
+    reservada a "Informação" — para que o VERDE fique exclusivo da
+    decisão "🟢 APOSTAR AGORA" em todo o Dashboard.
+    """
+    return pill(label, _HEADER_COLOR_MAP.get(color_key, color_key))
 
 
 def section_title(text: str) -> None:
@@ -263,14 +420,14 @@ with header_right:
         st.rerun()
 
 st.markdown(
-    pill(f"Versão: {DASHBOARD_VERSION}", "ok")
-    + pill(f"Última atualização: {datetime.now().strftime('%H:%M:%S')}", "ok")
-    + pill(f"Jogos Live: {len(live_events)}", "ok" if live_events else "warn")
-    + pill(f"Scanner: {scanner_label}", scanner_color)
-    + pill(f"Telegram: {telegram_label}", telegram_color)
-    + pill(f"BSD API: {bsd_label}", bsd_color)
-    + pill(f"Machine Learning: {ml_label}", ml_color)
-    + pill(f"GitHub Actions: {github_actions_label}", github_actions_color),
+    header_pill(f"Versão: {DASHBOARD_VERSION}", "ok")
+    + header_pill(f"Última atualização: {datetime.now().strftime('%H:%M:%S')}", "ok")
+    + header_pill(f"Jogos Live: {len(live_events)}", "ok" if live_events else "warn")
+    + header_pill(f"Scanner: {scanner_label}", scanner_color)
+    + header_pill(f"Telegram: {telegram_label}", telegram_color)
+    + header_pill(f"BSD API: {bsd_label}", bsd_color)
+    + header_pill(f"Machine Learning: {ml_label}", ml_color)
+    + header_pill(f"GitHub Actions: {github_actions_label}", github_actions_color),
     unsafe_allow_html=True,
 )
 
@@ -289,9 +446,20 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 def render_decision_panel(snap: dict) -> None:
+    """
+    🎯 Decisão do Motor — o cartão MAIOR do Dashboard (Sprint 1B).
+    `d["label"]/d["color"]` continuam a vir 1:1 de `decision_badge` (sem
+    alterar nenhum critério); o Engine Score aqui é o MESMO número já
+    calculado por `compute_engine_score` — só ganha um badge grande
+    (🔴/🟡/🟢/🏆, ver `engine_score_tier`, puramente visual) mais um
+    gauge Plotly com o detalhe fino, tal como antes.
+    """
     section_title("🎯 Decisão do Motor")
     d = snap["decision"]
-    col_decision, col_confidence, col_score = st.columns([2, 1, 1])
+    es = snap["engine_score"]
+    score_icon, score_tier_label, score_color = engine_score_tier(es["score"])
+
+    col_decision, col_score, col_confidence = st.columns([2.4, 1, 1])
 
     with col_decision:
         st.markdown(
@@ -300,6 +468,20 @@ def render_decision_panel(snap: dict) -> None:
                  border-color:{_BADGE_BORDERS[d['color']]};">
                 <div class="fee-decision-label">{d['label']}</div>
                 <div class="fee-decision-reason">{d['reason']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    with col_score:
+        st.markdown(
+            f"""
+            <div class="fee-score-badge" style="background:{_BADGE_COLORS[score_color]};
+                 border-color:{_BADGE_BORDERS[score_color]};">
+                <div class="fee-score-icon">{score_icon}</div>
+                <div class="fee-score-value">{es['score']:.0f}</div>
+                <div class="fee-score-label">Engine Score — {score_tier_label}</div>
+                <div class="fee-score-caption">0-49 🔴 · 50-69 🟡 · 70-84 🟢 · 85-100 🏆 Elite</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -318,8 +500,7 @@ def render_decision_panel(snap: dict) -> None:
         )
         st.progress(min(max(d["confidence_score"] / 100.0, 0.0), 1.0))
 
-    with col_score:
-        es = snap["engine_score"]
+    with st.expander("📐 Engine Score — detalhe (gauge)"):
         fig = go.Figure(
             go.Indicator(
                 mode="gauge+number",
@@ -342,56 +523,69 @@ def render_decision_panel(snap: dict) -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def _render_single_model_card(title: str, market: str, prob: float, footnote: str) -> None:
-    """Um único cartão de modelo (mesmo estilo/markup já usado antes desta
-    reorganização em `render_models_panel` — só extraído para permitir
-    ordenar Goal Engine/Monte Carlo/Machine Learning/Dixon-Coles como
-    painéis 3-6 separados, conforme a ORDEM da Sprint 1A)."""
+def _model_card_html(title: str, market: str, prob: float, footnote: str) -> str:
+    """
+    Markup de UM cartão de modelo — usado igualmente pelos 4 modelos
+    (Goal Engine, Monte Carlo, Machine Learning, Dixon-Coles) para que
+    tenham exatamente o mesmo layout/tamanho/alinhamento (Sprint 1B).
+    Não recalcula nenhuma probabilidade: `prob`/`footnote` já vêm de
+    `snap["models"]`, produzido por `build_match_snapshot`.
+    """
     color = "ok" if prob >= 60 else ("warn" if prob >= 35 else "off")
-    st.markdown(
-        f"""
-        <div class="fee-card">
-            <div style="font-weight:700;">{title}</div>
-            <div style="opacity:0.7;font-size:0.78rem;margin-bottom:6px;">{market}</div>
-            <div style="font-size:1.8rem;font-weight:800;color:{_BADGE_BORDERS[color]};">{prob:.1f}%</div>
-            <div style="opacity:0.75;font-size:0.78rem;">{footnote}</div>
+    return f"""
+        <div class="fee-model-card">
+            <div>
+                <div class="fee-model-title">{title}</div>
+                <div class="fee-model-market">{market}</div>
+                <div class="fee-model-value" style="color:{_BADGE_BORDERS[color]};">{prob:.1f}%</div>
+            </div>
+            <div class="fee-model-footnote">{footnote}</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.progress(min(max(prob / 100.0, 0.0), 1.0))
+        """
 
 
-def render_goal_engine_panel(snap: dict) -> None:
-    section_title("⚙️ Goal Engine")
-    m = snap["models"]["goal_engine"]
-    _render_single_model_card("⚙️ Goal Engine", m["market"], m["probability"], m["status"])
+def render_models_panel(snap: dict) -> None:
+    """
+    🧩 Modelos — Goal Engine / Monte Carlo / Machine Learning /
+    Dixon-Coles apresentados lado a lado, TODOS com o mesmo layout,
+    tamanho e alinhamento (requisito Sprint 1B). Mantém a MESMA ordem
+    oficial da Sprint 1A (3 Goal Engine, 4 Monte Carlo, 5 ML, 6
+    Dixon-Coles) e os MESMOS valores já calculados pelo motor — apenas
+    agrupa a apresentação numa única grelha em vez de 4 secções
+    empilhadas.
+    """
+    section_title("🧩 Modelos do Motor")
+    ge = snap["models"]["goal_engine"]
+    mc = snap["models"]["monte_carlo"]
+    ml = snap["models"]["machine_learning"]
+    dc = snap["models"]["dixon_coles"]
 
-
-def render_monte_carlo_panel(snap: dict) -> None:
-    section_title("🎲 Monte Carlo")
-    m = snap["models"]["monte_carlo"]
-    _render_single_model_card(
-        "🎲 Monte Carlo", m["market"], m["over_15"],
-        f"Over 2.5: {m['over_25']}% · BTTS: {m['btts']}%",
-    )
-
-
-def render_ml_panel(snap: dict) -> None:
-    section_title("🤖 Machine Learning")
-    m = snap["models"]["machine_learning"]
-    _render_single_model_card(
-        "🤖 Machine Learning", m["market"], m["probability"], f"Conf.: {m['confidence']:.0f}/100"
-    )
-
-
-def render_dixon_coles_panel(snap: dict) -> None:
-    section_title("📐 Dixon-Coles")
-    m = snap["models"]["dixon_coles"]
-    _render_single_model_card(
-        "📐 Dixon-Coles", m["market"], max(m["home"], m["draw"], m["away"]),
-        f"1:{m['home']}% X:{m['draw']}% 2:{m['away']}%",
-    )
+    cols = st.columns(4)
+    with cols[0]:
+        st.markdown(_model_card_html("⚙️ Goal Engine", ge["market"], ge["probability"], ge["status"]), unsafe_allow_html=True)
+    with cols[1]:
+        st.markdown(
+            _model_card_html(
+                "🎲 Monte Carlo", mc["market"], mc["over_15"],
+                f"Over 2.5: {mc['over_25']}% · BTTS: {mc['btts']}%",
+            ),
+            unsafe_allow_html=True,
+        )
+    with cols[2]:
+        st.markdown(
+            _model_card_html(
+                "🤖 Machine Learning", ml["market"], ml["probability"], f"Conf.: {ml['confidence']:.0f}/100"
+            ),
+            unsafe_allow_html=True,
+        )
+    with cols[3]:
+        st.markdown(
+            _model_card_html(
+                "📐 Dixon-Coles", dc["market"], max(dc["home"], dc["draw"], dc["away"]),
+                f"1:{dc['home']}% X:{dc['draw']}% 2:{dc['away']}%",
+            ),
+            unsafe_allow_html=True,
+        )
 
     c = snap["consensus"]
     st.markdown(
@@ -420,29 +614,66 @@ def render_value_panel(snap: dict, bankroll: float) -> None:
     )
 
 
+def _stat_tile_html(icon: str, label: str, value: str, bar_pct: float = None, bar_color: str = "#3b82f6") -> str:
+    """Uma célula da grelha de Estatísticas Live — mesmo layout/tamanho
+    para todos os indicadores (Sprint 1B: 'converter listas em
+    grelha'). `bar_pct` é opcional (None para valores sem escala 0-100,
+    ex.: contagens brutas de remates/cantos)."""
+    bar_html = ""
+    if bar_pct is not None:
+        pct = min(max(bar_pct, 0.0), 100.0)
+        bar_html = (
+            f'<div class="fee-stat-bar-track">'
+            f'<div class="fee-stat-bar-fill" style="width:{pct:.0f}%;background:{bar_color};"></div>'
+            f"</div>"
+        )
+    # Sem quebras de linha/indentação: várias tiles são concatenadas
+    # num único bloco HTML (grelha) e o parser de Markdown do Streamlit
+    # trata linhas indentadas a seguir a uma linha em branco como bloco
+    # de código — por isso cada tile tem de ser UMA única linha.
+    return (
+        f'<div class="fee-stat-tile">'
+        f'<div class="fee-stat-label">{icon} {label}</div>'
+        f'<div class="fee-stat-value">{value}</div>'
+        f"{bar_html}"
+        f"</div>"
+    )
+
+
 def render_live_panel(snap: dict) -> None:
-    section_title("📡 Painel Live")
+    """
+    📡 Estatísticas Live — grelha uniforme (Sprint 1B: já não é uma
+    lista de `st.metric`/`st.progress` heterogénea, mas 10 blocos com o
+    MESMO layout): Pressão, Dominância, Remates, Remates à Baliza,
+    Ataques, Cantos, Posse, xG, Momentum, Cartões. Todos os valores
+    continuam a vir de `snap["live"]`, sem nenhum recálculo aqui.
+    """
+    section_title("📡 Estatísticas Live")
     live = snap["live"]
 
-    cols = st.columns(4)
-    with cols[0]:
-        st.markdown("**Pressão**")
-        st.progress(min(max(live["pressure"] / 100.0, 0.0), 1.0), text=f"{live['pressure']:.1f}/100")
-        st.markdown("**Dominância**")
-        st.progress(min(max(live["dominance_index"] / 100.0, 0.0), 1.0), text=f"{live['dominance_index']:.1f}/100")
-    with cols[1]:
-        st.markdown("**Posse de Bola (casa)**")
-        st.progress(min(max(live["possession"] / 100.0, 0.0), 1.0), text=f"{live['possession']:.0f}%")
-        st.metric("xG (10 min)", f"{live['estimated_xg_10m']:.2f}")
-    with cols[2]:
-        st.metric("Ataques Perigosos (10m)", live["dangerous_attacks_10m"])
-        st.metric("Remates (10m)", live["shots_10m"])
-        st.metric("Remates Enquadrados (10m)", live["shots_on_target_10m"])
-    with cols[3]:
-        st.metric("Cantos (10m)", live["corners_10m"])
-        st.metric("Cartões Vermelhos", live["red_cards"])
-        momentum_color = {"SURGING": "ok", "RISING": "ok", "STABLE": "warn", "FALLING": "off", "COLLAPSING": "off"}.get(live["momentum"], "warn")
-        st.markdown(pill(f"Momentum: {live['momentum']}", momentum_color), unsafe_allow_html=True)
+    momentum_color_key = {
+        "SURGING": "ok", "RISING": "ok", "STABLE": "warn", "FALLING": "off", "COLLAPSING": "off",
+    }.get(live["momentum"], "warn")
+
+    tiles = [
+        _stat_tile_html("💥", "Pressão", f"{live['pressure']:.0f}/100", live["pressure"], "#3b82f6"),
+        _stat_tile_html("🧭", "Dominância", f"{live['dominance_index']:.0f}/100", live["dominance_index"], "#3b82f6"),
+        _stat_tile_html("🎯", "Remates", f"{live['shots_10m']}", None),
+        _stat_tile_html("🥅", "Remates à Baliza", f"{live['shots_on_target_10m']}", None),
+        _stat_tile_html("⚡", "Ataques", f"{live['dangerous_attacks_10m']}", None),
+        _stat_tile_html("🚩", "Cantos", f"{live['corners_10m']}", None),
+        _stat_tile_html("⚽", "Posse", f"{live['possession']:.0f}%", live["possession"], "#3b82f6"),
+        _stat_tile_html("📈", "xG (10m)", f"{live['estimated_xg_10m']:.2f}", None),
+        _stat_tile_html(
+            "🔥", "Momentum",
+            f'<span style="color:{_BADGE_BORDERS[momentum_color_key]};">{live["momentum"]}</span>', None,
+        ),
+        _stat_tile_html(
+            "🟥", "Cartões",
+            f'<span style="color:{_BADGE_BORDERS["off"] if live["red_cards"] else "inherit"};">{live["red_cards"]}</span>', None,
+        ),
+    ]
+    st.markdown(f'<div class="fee-stats-grid">{"".join(tiles)}</div>', unsafe_allow_html=True)
 
     st.caption(f"🪟 Janela de golo prevista: **{live['goal_window']}** — {live['goal_window_intensity']}")
 
@@ -483,31 +714,40 @@ def render_why_this_decision_panel(snap: dict) -> None:
             return "<li><em>Nenhum.</em></li>"
         return "".join(f"<li>{i}</li>" for i in items)
 
+    # Bloco tipo relatório (Sprint 1B): mesmo texto de sempre, apenas
+    # apresentado como um cartão único com cabeçalho e ícones uniformes
+    # (✔ positivos / ⚠ riscos / ℹ avisos), em vez de 3 cartões soltos.
+    st.markdown(
+        '<div class="fee-report"><div class="fee-report-header">'
+        "🧾 Relatório de Explicabilidade</div><div class=\"fee-report-body\">",
+        unsafe_allow_html=True,
+    )
+
     cols = st.columns(3)
     with cols[0]:
         st.markdown(
-            f'<div class="fee-card fee-why-col">'
+            f'<div class="fee-why-col">'
             f'<div class="fee-why-title">✔ Pontos positivos</div>'
             f'<ul>{_list_html(explanation.positives)}</ul></div>',
             unsafe_allow_html=True,
         )
     with cols[1]:
         st.markdown(
-            f'<div class="fee-card fee-why-col">'
+            f'<div class="fee-why-col">'
             f'<div class="fee-why-title">⚠ Riscos</div>'
             f'<ul>{_list_html(explanation.negatives)}</ul></div>',
             unsafe_allow_html=True,
         )
     with cols[2]:
         st.markdown(
-            f'<div class="fee-card fee-why-col">'
-            f'<div class="fee-why-title">🚨 Avisos</div>'
+            f'<div class="fee-why-col">'
+            f'<div class="fee-why-title">ℹ Avisos</div>'
             f'<ul>{_list_html(explanation.warnings)}</ul></div>',
             unsafe_allow_html=True,
         )
 
     st.markdown(
-        f'<div class="fee-card fee-why-summary">Resumo: {explanation.summary}</div>',
+        f'<div class="fee-why-summary">Resumo: {explanation.summary}</div></div></div>',
         unsafe_allow_html=True,
     )
 
@@ -721,10 +961,7 @@ def render_match(snap: dict, bankroll: float, report) -> None:
 
     render_decision_panel(snap)                       # 1. Decisão
     render_why_this_decision_panel(snap)               # 2. Explainability
-    render_goal_engine_panel(snap)                      # 3. Goal Engine
-    render_monte_carlo_panel(snap)                       # 4. Monte Carlo
-    render_ml_panel(snap)                                 # 5. Machine Learning
-    render_dixon_coles_panel(snap)                         # 6. Dixon-Coles
+    render_models_panel(snap)                           # 3-6. Goal Engine / Monte Carlo / ML / Dixon-Coles
     render_value_panel(snap, bankroll)                      # 7. Mercado
     render_live_panel(snap)                                  # 8. Estatísticas Live
     render_strength_panel(snap)                               # 9. Strength
@@ -775,7 +1012,7 @@ def render_watching_card(snap: dict) -> None:
 
     st.markdown(
         f"""
-        <div class="fee-card">
+        <div class="fee-card fee-card-watching">
             <div style="font-weight:700;">{card['home_team']} vs {card['away_team']}</div>
             <div style="font-size:0.85rem;margin-top:4px;">⏱️ Minuto: <b>{card['elapsed']}</b></div>
             <div style="font-size:0.9rem;margin-top:4px;">Engine Score:
@@ -856,10 +1093,10 @@ else:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# 3. 🟡 Em Observação
+# 3. 👁️ Em Observação (identidade visual laranja da zona — Sprint 1B)
 # ---------------------------------------------------------------------------
 
-section_title("🟡 Em Observação")
+section_title("👁️ Em Observação")
 
 if not watching_snapshots:
     st.caption("Nenhum jogo em observação neste momento.")
@@ -898,7 +1135,7 @@ tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
 # ---------------------------------------------------------------------------
 
 with tab_backtest:
-    st.subheader("📊 Backtesting Framework")
+    st.markdown('<div class="fee-backtest-title">📊 Backtesting Framework</div>', unsafe_allow_html=True)
     st.caption(
         "Demonstração com o dataset histórico real incluído no repositório "
         "(`examples/backtest/sample_real_games.csv`) — mesmo `BacktestEngine` usado por `run_backtest.py --demo`, "
@@ -932,7 +1169,7 @@ with tab_backtest:
         curve = equity_curve(report.placed_bets)
         fig = go.Figure()
         if not curve.empty:
-            fig.add_trace(go.Scatter(x=list(range(1, len(curve) + 1)), y=curve.values, mode="lines+markers", line=dict(color="#1DB954")))
+            fig.add_trace(go.Scatter(x=list(range(1, len(curve) + 1)), y=curve.values, mode="lines+markers", line=dict(color="#7c3aed")))
         fig.add_hline(y=0, line_dash="dash", line_color="gray")
         fig.update_layout(title="Evolução da Banca (lucro acumulado)", height=340, margin=dict(l=10, r=10, t=40, b=10))
         st.plotly_chart(fig, use_container_width=True)
