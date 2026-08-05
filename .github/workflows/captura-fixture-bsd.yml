@@ -1,0 +1,205 @@
+name: Captura Fixture BSD Events v2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  capturar-fixture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Código
+        uses: actions/checkout@v4
+
+      - name: Pedido de amostra (limit=5)
+        env:
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          echo "::add-mask::$BZZOIRO_API_KEY"
+          mkdir -p tests/fixtures
+          http_code=$(curl -s -o /tmp/sample_response.json -w "%{http_code}" \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            "https://sports.bzzoiro.com/api/v2/events/?limit=5")
+          echo "SAMPLE_HTTP_CODE=$http_code" >> "$GITHUB_ENV"
+
+      - name: Validar resposta da amostra
+        run: |
+          {
+            echo "## Captura de fixture — /api/v2/events/"
+            echo ""
+            echo "### Pedido 1 — amostra (limit=5)"
+            echo "- HTTP status: \`$SAMPLE_HTTP_CODE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$SAMPLE_HTTP_CODE" != "200" ]; then
+            {
+              echo "- **FALHOU** — resposta não foi 200."
+              echo ""
+              echo '```'
+              cat /tmp/sample_response.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Pedido 1 falhou com HTTP $SAMPLE_HTTP_CODE" >&2
+            exit 1
+          fi
+
+      - name: Analisar estrutura e gravar fixture
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          with open("/tmp/sample_response.json") as f:
+              data = json.load(f)
+
+          summary_lines = []
+
+          if isinstance(data, list):
+              shape = "array simples"
+              events = data
+          elif isinstance(data, dict):
+              if isinstance(data.get("results"), list):
+                  shape = f"envelope (chave 'results'; chaves de topo: {sorted(data.keys())})"
+                  events = data["results"]
+              elif isinstance(data.get("events"), list):
+                  shape = f"envelope (chave 'events'; chaves de topo: {sorted(data.keys())})"
+                  events = data["events"]
+              else:
+                  shape = f"objeto inesperado (chaves de topo: {sorted(data.keys())})"
+                  events = []
+          else:
+              shape = f"tipo inesperado: {type(data).__name__}"
+              events = []
+
+          summary_lines.append(f"- Formato da resposta: {shape}")
+          summary_lines.append(f"- Nº de eventos na amostra: {len(events)}")
+
+          league_hits = []
+          if events and isinstance(events[0], dict):
+              first = events[0]
+              fields = sorted(first.keys())
+              summary_lines.append(f"- Campos de um evento ({len(fields)}): `{', '.join(fields)}`")
+
+              def scan(obj, path=""):
+                  found = []
+                  if isinstance(obj, dict):
+                      for k, v in obj.items():
+                          kp = f"{path}.{k}" if path else k
+                          if any(t in k.lower() for t in ("league", "competition", "tournament")):
+                              found.append((kp, v))
+                          if isinstance(v, (dict, list)):
+                              found.extend(scan(v, kp))
+                  elif isinstance(obj, list):
+                      for i, item in enumerate(obj[:1]):
+                          found.extend(scan(item, f"{path}[{i}]"))
+                  return found
+
+              league_hits = scan(first)
+
+          if league_hits:
+              items = "; ".join(f"`{k}` = {v!r}" for k, v in league_hits[:5])
+              summary_lines.append(f"- Campo(s) de liga/competição encontrados: {items}")
+          else:
+              summary_lines.append("- Nenhum campo com nome de liga/competição encontrado no primeiro evento.")
+
+          os.makedirs("tests/fixtures", exist_ok=True)
+          with open("tests/fixtures/events_v2_sample.json", "w") as f:
+              json.dump(data, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(summary_lines) + "\n")
+          PYEOF
+
+      - name: Verificar que o fixture não contém segredos
+        env:
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          echo "::add-mask::$BZZOIRO_API_KEY"
+          if grep -qF -- "$BZZOIRO_API_KEY" tests/fixtures/events_v2_sample.json; then
+            echo "ERRO: o ficheiro de fixture contém a chave de API. A abortar sem expor o ficheiro." >&2
+            exit 1
+          fi
+          if grep -qiE '"(authorization|api[_-]?key|access[_-]?token|bearer)"[[:space:]]*:' tests/fixtures/events_v2_sample.json; then
+            echo "ERRO: o ficheiro de fixture contém um campo com nome sensível (authorization/api_key/token). A abortar." >&2
+            exit 1
+          fi
+          echo "- Verificação de segredos no fixture: OK, nenhuma chave/token encontrada." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pedido de cobertura 24h (limit=200)
+        env:
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          echo "::add-mask::$BZZOIRO_API_KEY"
+          date_from=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          date_to=$(date -u -d "+24 hours" +%Y-%m-%dT%H:%M:%SZ)
+          echo "WINDOW_FROM=$date_from" >> "$GITHUB_ENV"
+          echo "WINDOW_TO=$date_to" >> "$GITHUB_ENV"
+          http_code=$(curl -s -o /tmp/window_response.json -w "%{http_code}" \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            --get \
+            --data-urlencode "date_from=${date_from}" \
+            --data-urlencode "date_to=${date_to}" \
+            --data-urlencode "limit=200" \
+            "https://sports.bzzoiro.com/api/v2/events/")
+          echo "WINDOW_HTTP_CODE=$http_code" >> "$GITHUB_ENV"
+
+      - name: Validar e reportar pedido 24h
+        run: |
+          {
+            echo ""
+            echo "### Pedido 2 — próximas 24h (date_from=$WINDOW_FROM, date_to=$WINDOW_TO, limit=200)"
+            echo "- HTTP status: \`$WINDOW_HTTP_CODE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$WINDOW_HTTP_CODE" != "200" ]; then
+            {
+              echo "- **FALHOU** — resposta não foi 200."
+              echo ""
+              echo '```'
+              cat /tmp/window_response.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "Pedido 2 falhou com HTTP $WINDOW_HTTP_CODE" >&2
+            exit 1
+          fi
+
+          python3 - <<'PYEOF'
+          import json, os
+          with open("/tmp/window_response.json") as f:
+              data = json.load(f)
+          if isinstance(data, list):
+              events = data
+          elif isinstance(data, dict):
+              events = data.get("results") or data.get("events") or []
+          else:
+              events = []
+          n = len(events)
+          lines = [f"- Nº de eventos nas próximas 24h: {n}"]
+          if n == 200:
+              lines.append("- **Atenção: vieram exatamente 200 eventos — possível truncagem pelo limite de página (max=200).**")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PYEOF
+
+      - name: Criar branch, commit e abrir PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b data/fixture-bsd-v2
+          git add tests/fixtures/events_v2_sample.json
+          git commit -m "test: adiciona fixture de amostra de /api/v2/events/"
+          git push -u origin data/fixture-bsd-v2
+          gh pr create \
+            --title "test: fixture de amostra de /api/v2/events/" \
+            --body "Fixture capturado via workflow_dispatch (\`captura-fixture-bsd.yml\`) a partir de \`GET /api/v2/events/?limit=5\`. Ver o resumo (\`GITHUB_STEP_SUMMARY\`) da execução para detalhes de estrutura da resposta e contagem de eventos na janela de 24h." \
+            --base "${{ github.event.repository.default_branch }}" \
+            --head data/fixture-bsd-v2
