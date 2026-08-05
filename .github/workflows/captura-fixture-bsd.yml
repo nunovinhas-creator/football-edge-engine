@@ -211,7 +211,13 @@ jobs:
 
           # Vai buscar o branch de dados já existente em vez de o recriar —
           # cada captura fica com o seu próprio ficheiro com timestamp,
-          # nunca substitui nem apaga as anteriores.
+          # nunca substitui nem apaga as anteriores. O ficheiro capturado
+          # nesta execução fica untracked no ref que disparou o run (já
+          # está guardado em /tmp) — remove-o antes de mudar de branch,
+          # senão o git recusa-se a fazer checkout (entraria em conflito
+          # com o mesmo caminho já versionado em data/fixture-bsd-v2).
+          rm -f tests/fixtures/events_v2_sample.json
+
           if git ls-remote --exit-code --heads origin data/fixture-bsd-v2 > /dev/null 2>&1; then
             git fetch origin data/fixture-bsd-v2
             git checkout -B data/fixture-bsd-v2 origin/data/fixture-bsd-v2
