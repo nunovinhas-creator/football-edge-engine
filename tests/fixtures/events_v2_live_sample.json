@@ -12,7 +12,7 @@
       "event_date": "2026-08-05T08:00:00Z",
       "status": "inprogress",
       "period": "1st_half",
-      "current_minute": 17,
+      "current_minute": 19,
       "home_score": 0,
       "away_score": 0,
       "penalty_shootout": null,
@@ -21,7 +21,7 @@
       "away_score_ht": 0,
       "live_websocket": false,
       "websocket_plus": false,
-      "last_updated": "2026-08-05T08:19:19Z"
+      "last_updated": "2026-08-05T08:21:19Z"
     },
     {
       "id": 224878,
@@ -34,16 +34,16 @@
       "event_date": "2026-08-05T08:00:00Z",
       "status": "inprogress",
       "period": "1st_half",
-      "current_minute": 13,
-      "home_score": 0,
+      "current_minute": 15,
+      "home_score": 1,
       "away_score": 0,
       "penalty_shootout": null,
       "extra_time_score": null,
-      "home_score_ht": 0,
+      "home_score_ht": 1,
       "away_score_ht": 0,
       "live_websocket": false,
       "websocket_plus": false,
-      "last_updated": "2026-08-05T08:19:22Z"
+      "last_updated": "2026-08-05T08:21:23Z"
     },
     {
       "id": 224862,
@@ -56,7 +56,7 @@
       "event_date": "2026-08-05T08:00:00Z",
       "status": "inprogress",
       "period": "1st_half",
-      "current_minute": 15,
+      "current_minute": 17,
       "home_score": 0,
       "away_score": 0,
       "penalty_shootout": null,
@@ -65,7 +65,7 @@
       "away_score_ht": 0,
       "live_websocket": true,
       "websocket_plus": false,
-      "last_updated": "2026-08-05T08:19:15Z"
+      "last_updated": "2026-08-05T08:21:15Z"
     },
     {
       "id": 224860,
@@ -78,7 +78,7 @@
       "event_date": "2026-08-05T08:00:00Z",
       "status": "inprogress",
       "period": "1st_half",
-      "current_minute": 16,
+      "current_minute": 18,
       "home_score": 0,
       "away_score": 0,
       "penalty_shootout": null,
@@ -87,7 +87,7 @@
       "away_score_ht": 0,
       "live_websocket": false,
       "websocket_plus": false,
-      "last_updated": "2026-08-05T08:19:11Z"
+      "last_updated": "2026-08-05T08:21:11Z"
     }
   ]
 }
