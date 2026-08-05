@@ -256,6 +256,11 @@ jobs:
             -H "Accept: application/json" \
             "https://sports.bzzoiro.com/api/v2/events/live/")
 
+          echo "DEBUG code_no_slash_no_redirect=$code_no_slash_no_redirect"
+          echo "DEBUG location_no_slash=$location_no_slash"
+          echo "DEBUG code_no_slash(--location)=$code_no_slash"
+          echo "DEBUG code_slash=$code_slash"
+
           {
             echo "## Verificação /api/v2/events/live"
             echo ""
