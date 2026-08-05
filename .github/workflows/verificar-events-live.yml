@@ -1,0 +1,161 @@
+name: Verificar Forma da Resposta /events/live
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verificar-events-live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Código
+        uses: actions/checkout@v4
+
+      - name: Testar barra final em /api/v2/events/live
+        env:
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          echo "::add-mask::$BZZOIRO_API_KEY"
+
+          code_no_slash=$(curl -s -o /tmp/no_slash.json -w "%{http_code}" \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            --location \
+            "https://sports.bzzoiro.com/api/v2/events/live")
+
+          location_no_slash=$(curl -s -o /dev/null -D - \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            --no-location \
+            "https://sports.bzzoiro.com/api/v2/events/live" | grep -i '^location:' | tr -d '\r' || true)
+
+          code_no_slash_no_redirect=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            --no-location \
+            "https://sports.bzzoiro.com/api/v2/events/live")
+
+          code_slash=$(curl -s -o /tmp/slash.json -w "%{http_code}" \
+            -H "Authorization: Token ${BZZOIRO_API_KEY}" \
+            -H "Accept: application/json" \
+            "https://sports.bzzoiro.com/api/v2/events/live/")
+
+          {
+            echo "## Verificação /api/v2/events/live"
+            echo ""
+            echo "### Sem barra final (\`events/live\`)"
+            echo "- HTTP status sem seguir redireccionamento: \`$code_no_slash_no_redirect\`"
+            if [ -n "$location_no_slash" ]; then
+              echo "- $location_no_slash"
+            fi
+            echo "- HTTP status a seguir redireccionamento (--location): \`$code_no_slash\`"
+            echo ""
+            echo "### Com barra final (\`events/live/\`)"
+            echo "- HTTP status: \`$code_slash\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Analisar forma da resposta e gravar amostra
+        run: |
+          python3 - <<'PYEOF'
+          import json, os
+
+          def load(path):
+              try:
+                  with open(path) as f:
+                      return json.load(f)
+              except Exception:
+                  return None
+
+          no_slash = load("/tmp/no_slash.json")
+          slash = load("/tmp/slash.json")
+
+          lines = ["", "### Forma da resposta"]
+
+          def describe(label, data):
+              if data is None:
+                  lines.append(f"- {label}: corpo não é JSON válido (ou pedido falhou)")
+                  return
+              if isinstance(data, list):
+                  lines.append(f"- {label}: **array simples**, {len(data)} itens")
+                  return
+              if isinstance(data, dict):
+                  keys = sorted(data.keys())
+                  lines.append(f"- {label}: **objeto** com chaves de topo: `{', '.join(keys)}`")
+                  if isinstance(data.get("results"), list):
+                      lines.append(
+                          f"  - envelope estilo `/events/` (chave `results`): {len(data['results'])} itens; "
+                          f"`count`={data.get('count')}; `next` preenchido: {'sim' if data.get('next') else 'não'}"
+                      )
+                  if isinstance(data.get("events"), list):
+                      lines.append(
+                          f"  - chave `events` (forma documentada no schema.yaml): {len(data['events'])} itens; "
+                          f"`count`={data.get('count')}"
+                      )
+                  other_keys = [k for k in keys if k not in ("results", "events", "count", "next", "previous")]
+                  if other_keys:
+                      lines.append(f"  - outras chaves de topo: `{', '.join(other_keys)}`")
+                  return
+              lines.append(f"- {label}: tipo inesperado {type(data).__name__}")
+
+          describe("Sem barra final (a seguir redireccionamento)", no_slash)
+          describe("Com barra final", slash)
+
+          sample_source = slash if slash is not None else no_slash
+          if sample_source is not None:
+              if isinstance(sample_source, dict):
+                  sample = dict(sample_source)
+                  for key in ("results", "events"):
+                      if isinstance(sample.get(key), list):
+                          sample[key] = sample[key][:5]
+              elif isinstance(sample_source, list):
+                  sample = sample_source[:5]
+              else:
+                  sample = sample_source
+
+              os.makedirs("tests/fixtures", exist_ok=True)
+              with open("tests/fixtures/events_v2_live_sample.json", "w") as f:
+                  json.dump(sample, f, indent=2, ensure_ascii=False)
+                  f.write("\n")
+              lines.append("")
+              lines.append("- Amostra (até 5 eventos) gravada em `tests/fixtures/events_v2_live_sample.json` e commitada neste branch.")
+          else:
+              lines.append("")
+              lines.append("- **Nenhum dos dois pedidos devolveu JSON válido — nenhuma amostra gravada.**")
+
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(lines) + "\n")
+          PYEOF
+
+      - name: Verificar que a amostra não contém segredos
+        env:
+          BZZOIRO_API_KEY: ${{ secrets.BZZOIRO_API_KEY }}
+        run: |
+          echo "::add-mask::$BZZOIRO_API_KEY"
+          if [ -f tests/fixtures/events_v2_live_sample.json ]; then
+            if grep -qF -- "$BZZOIRO_API_KEY" tests/fixtures/events_v2_live_sample.json; then
+              echo "ERRO: a amostra contém a chave de API. A abortar sem expor o ficheiro." >&2
+              exit 1
+            fi
+            if grep -qiE '"(authorization|api[_-]?key|access[_-]?token|bearer)"[[:space:]]*:' tests/fixtures/events_v2_live_sample.json; then
+              echo "ERRO: a amostra contém um campo com nome sensível (authorization/api_key/token). A abortar." >&2
+              exit 1
+            fi
+            echo "- Verificação de segredos na amostra: OK, nenhuma chave/token encontrada." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Commit da amostra no branch atual
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if [ -f tests/fixtures/events_v2_live_sample.json ]; then
+            git add tests/fixtures/events_v2_live_sample.json
+            git commit -m "test: adiciona amostra de /api/v2/events/live/" || echo "Amostra idêntica ao commit anterior — nada para gravar."
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
