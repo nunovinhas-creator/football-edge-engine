@@ -50,6 +50,7 @@ from src.report.dashboard_data import (
 )
 from src.report.explainability import generate_explanation
 from src.report.historical_validation import build_historical_validation
+from src.report import upcoming_matches
 
 DASHBOARD_VERSION = "Pro v1.0"
 
@@ -360,6 +361,23 @@ def _load_ml_predictor() -> LiveMLPredictor:
 @st.cache_data(ttl=60, show_spinner=False)
 def _load_backtest_report():
     return run_demo_backtest()
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _load_upcoming_opportunities():
+    """
+    🎯 Oportunidades das Próximas 24 Horas (Sprint 2) — camada de cache.
+    Toda a lógica vive em `src.report.upcoming_matches`; esta função só
+    garante que a BSD API/os motores não são reconsultados/recalculados a
+    cada interação Streamlit (item de performance da Sprint 2), tal como
+    já acontece para `_load_backtest_report`/`_load_history_df` acima.
+    """
+    report = _load_backtest_report()
+    return upcoming_matches.list_upcoming_opportunities(
+        ml_predictor=ml_predictor,
+        goal_engine=goal_engine,
+        all_bets=report.all_bets,
+    )
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -1025,6 +1043,118 @@ def render_watching_card(snap: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 🎯 Oportunidades das Próximas 24 Horas (Sprint 2) — painel NOVO e
+# independente do Dashboard Live. Toda a lógica (busca de jogos, snapshot
+# pré-jogo, ranking, filtros, pesquisa, histórico de jogos semelhantes)
+# vive em `src.report.upcoming_matches`; as funções abaixo apenas desenham
+# o que essa camada já calculou — nenhuma decisão, probabilidade, edge,
+# EV, Kelly ou score é recalculado aqui.
+# ---------------------------------------------------------------------------
+
+def render_upcoming_filters(opportunities: list) -> dict:
+    """Filtros da Sprint 2 (Competição, Mercado, Engine Score mínimo,
+    Decisão, Hora) + pesquisa por equipa/competição. Devolve os critérios
+    escolhidos; a filtragem em si acontece em
+    `upcoming_matches.filter_opportunities`/`search_opportunities`."""
+    competitions = upcoming_matches.available_competitions(opportunities)
+    markets = upcoming_matches.available_markets(opportunities)
+    decisions = upcoming_matches.available_decisions(opportunities)
+
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        competition = st.selectbox("Competição", ["Todas"] + competitions, key="upcoming_filter_competition")
+    with col2:
+        market = st.selectbox("Mercado", ["Todos"] + markets, key="upcoming_filter_market")
+    with col3:
+        decision = st.selectbox("Decisão", ["Todas"] + decisions, key="upcoming_filter_decision")
+    with col4:
+        min_score = st.slider("Engine Score mínimo", 0, 100, 0, key="upcoming_filter_min_score")
+
+    col5, col6 = st.columns([1, 2])
+    with col5:
+        hour_range = st.slider("Hora (kickoff)", 0, 23, (0, 23), key="upcoming_filter_hour")
+    with col6:
+        query = st.text_input("🔎 Pesquisar por equipa ou competição", key="upcoming_search")
+
+    return {
+        "competition": None if competition == "Todas" else competition,
+        "market": None if market == "Todos" else market,
+        "decision": None if decision == "Todas" else decision,
+        "min_engine_score": min_score if min_score > 0 else None,
+        "hour_from": hour_range[0],
+        "hour_to": hour_range[1],
+        "query": query,
+    }
+
+
+def render_similar_games_block(similar: dict) -> None:
+    """📈 Histórico de Jogos Semelhantes — todos os valores vêm de
+    `upcoming_matches.build_similar_games_summary`, que por sua vez só
+    reaplica o Backtesting Framework já existente (mesmas funções do
+    painel "Validação Histórica da Aposta Atual" do Dashboard Live)."""
+    if not similar["n_bets"]:
+        st.caption("📈 Histórico de Jogos Semelhantes: sem jogos semelhantes suficientes no dataset de demonstração.")
+        return
+
+    cols = st.columns(4)
+    cols[0].metric("Jogos Semelhantes", similar["n_bets"])
+    cols[1].metric("ROI Histórico", f"{similar['roi_pct']:+.1f}%")
+    cols[2].metric("Yield", f"{similar['yield_pct']:+.1f}%")
+    cols[3].metric("Win Rate", f"{similar['hit_rate_pct']:.1f}%")
+
+    cols2 = st.columns(3)
+    cols2[0].metric("CLV", f"{similar['clv_pct']:+.2f}%" if similar["clv_pct"] is not None else "—")
+    cols2[1].metric("Brier", f"{similar['brier_score']:.4f}")
+    cols2[2].metric("Drawdown Máx.", f"{similar['max_drawdown_pct']:.1f}%")
+
+
+def render_upcoming_card(opp: dict, bankroll: float, report) -> None:
+    """Cartão de UMA oportunidade das próximas 24 horas — Hora,
+    Competição, Equipas, Mercado recomendado, Odd, Engine Score, Decisão,
+    Monte Carlo principal, Edge, Kelly e selo de estrelas, mais o bloco
+    "📈 Histórico de Jogos Semelhantes". "▶ Ver análise" expande EXATAMENTE
+    o mesmo painel do Dashboard Live (`render_match`), sobre o MESMO
+    snapshot já calculado uma única vez por `build_opportunity` — nunca
+    recalculado aqui."""
+    card = opp["card"]
+    value = opp["value"]
+    es = opp["engine_score"]
+    d = opp["decision"]
+    kickoff = opp["kickoff"]
+
+    st.markdown(
+        f"""
+        <div class="fee-card">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div style="font-weight:700;font-size:1.05rem;">{card['home_team']} vs {card['away_team']}</div>
+                <div style="font-size:1.1rem;" title="Classificação (Engine Score)">{opp['star_rating']}</div>
+            </div>
+            <div style="opacity:0.7;font-size:0.8rem;margin-bottom:6px;">{card['competition']}</div>
+            <div style="font-size:0.85rem;">🕒 Hora: <b>{kickoff['hour_label']}</b></div>
+            <div style="font-size:0.85rem;">Mercado recomendado: {value['market']} · Odd: <b>{value['bookie_odd']:.2f}</b></div>
+            <div style="font-size:0.85rem;">🎲 Monte Carlo: <b>{opp['monte_carlo_headline']}</b></div>
+            <div style="font-size:0.85rem;">Edge: <b>{value['edge_pct']:+.1f}%</b> · Kelly: <b>{value['kelly_pct']:.2f}%</b></div>
+            <div style="margin-top:8px;">{pill(d['label'], d['color'])}
+                <span style="font-weight:700;color:{_BADGE_BORDERS[es['color']]};">Engine Score: {es['score']:.0f}/100</span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("📈 Histórico de Jogos Semelhantes"):
+        render_similar_games_block(opp["similar_games"])
+
+    state_key = f"show_upcoming_analysis_{opp['match_id']}"
+    if st.button("▶ Ver análise", key=f"btn-{state_key}", use_container_width=True):
+        st.session_state[state_key] = not st.session_state.get(state_key, False)
+
+    if st.session_state.get(state_key, False):
+        with st.container(border=True):
+            render_match(opp["snapshot"], bankroll, report)
+
+
+# ---------------------------------------------------------------------------
 # Snapshots dos jogos em direto — mesma construção já usada antes desta
 # reorganização (Sprint 1A é só de apresentação: nenhum snapshot, decisão,
 # probabilidade, edge, EV, Kelly ou lambda é recalculado aqui). Alimenta
@@ -1115,7 +1245,10 @@ st.divider()
 # ---------------------------------------------------------------------------
 
 section_title("🗓️ Próximos Jogos")
-st.info("Será implementado na Sprint 2.")
+st.info(
+    "🎯 As oportunidades das próximas 24 horas passaram a ter separador próprio — "
+    "ver '🎯 Próximas 24 Horas' abaixo (Sprint 2)."
+)
 
 st.divider()
 
@@ -1125,9 +1258,62 @@ st.divider()
 # Sprint 1A): apenas passaram para segundo plano, atrás das 4 zonas acima.
 # ---------------------------------------------------------------------------
 
-tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
-    ["📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor", "🚨 Goal Imminent Alerts"]
+tab_upcoming, tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
+    ["🎯 Próximas 24 Horas", "📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor", "🚨 Goal Imminent Alerts"]
 )
+
+
+# ---------------------------------------------------------------------------
+# 🎯 Tab: Próximas 24 Horas (Sprint 2 — painel novo, independente do
+# Dashboard Live; não substitui nem mistura com as zonas 2/3/4 da Home,
+# que continuam a mostrar apenas jogos EM DIRETO).
+# ---------------------------------------------------------------------------
+
+with tab_upcoming:
+    st.markdown('<div class="fee-section-title">🎯 Oportunidades das Próximas 24 Horas</div>', unsafe_allow_html=True)
+    st.caption(
+        "Melhores jogos agendados entre agora e daqui a 24 horas, ordenados por Decisão do "
+        "motor (🟢 Apostar Agora → 🟡 Aguardar → 🔴 Não Apostar) e, dentro de cada grupo, por "
+        "Engine Score — reutilizando exatamente os mesmos motores oficiais do Dashboard Live "
+        "(Goal Engine, Monte Carlo, Dixon-Coles, Machine Learning, Edge, EV, Kelly, Decision "
+        "Engine) e o mesmo Backtesting Framework, sem recalcular nenhum modelo. Fonte de dados: "
+        "BSD API."
+    )
+
+    try:
+        upcoming_opportunities = _load_upcoming_opportunities()
+        upcoming_fetch_error = None
+    except Exception as exc:
+        upcoming_opportunities = []
+        upcoming_fetch_error = str(exc)
+
+    if upcoming_fetch_error:
+        st.info(
+            "ℹ️ Não foi possível obter jogos agendados da BSD API neste momento "
+            f"({upcoming_fetch_error})."
+        )
+    elif not upcoming_opportunities:
+        st.info("Sem jogos agendados para as próximas 24 horas na BSD API neste momento.")
+    else:
+        upcoming_filters = render_upcoming_filters(upcoming_opportunities)
+        upcoming_filtered = upcoming_matches.filter_opportunities(
+            upcoming_opportunities,
+            competition=upcoming_filters["competition"],
+            market=upcoming_filters["market"],
+            min_engine_score=upcoming_filters["min_engine_score"],
+            decision=upcoming_filters["decision"],
+            hour_from=upcoming_filters["hour_from"],
+            hour_to=upcoming_filters["hour_to"],
+        )
+        upcoming_filtered = upcoming_matches.search_opportunities(upcoming_filtered, upcoming_filters["query"])
+
+        st.caption(f"{len(upcoming_filtered)} de {len(upcoming_opportunities)} jogo(s) — ver filtros acima.")
+
+        if not upcoming_filtered:
+            st.info("Nenhum jogo cumpre os filtros/pesquisa selecionados.")
+        else:
+            for opportunity in upcoming_filtered:
+                render_upcoming_card(opportunity, bankroll, backtest_report_for_validation)
 
 
 # ---------------------------------------------------------------------------
