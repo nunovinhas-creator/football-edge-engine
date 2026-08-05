@@ -128,6 +128,35 @@ def get_ml_status(ml_predictor: LiveMLPredictor) -> Tuple[str, str]:
     return "🟠 Heurística (sem modelo treinado)", "warn"
 
 
+def get_scanner_status() -> Tuple[str, str]:
+    """(label, cor) do estado do Scanner (`src.alerts.live_scanner`,
+    executado 24/7 via GitHub Actions em `.github/workflows/live_logger.yml`),
+    a partir da MESMA configuração já usada por ele (API BSD + Telegram,
+    lida por `get_bsd_status`/`get_telegram_status`) — não faz nenhum
+    pedido de rede novo nem verifica execuções em direto."""
+    from src.config.settings import API_KEY
+
+    has_api = bool(API_KEY)
+    has_telegram = bool(os.getenv("TELEGRAM_BOT_TOKEN") and os.getenv("TELEGRAM_CHAT_ID"))
+    if has_api and has_telegram:
+        return "🟢 Configurado", "ok"
+    if has_api or has_telegram:
+        return "🟡 Configuração parcial", "warn"
+    return "🔴 Não configurado", "off"
+
+
+def get_github_actions_status() -> Tuple[str, str]:
+    """(label, cor) do estado dos workflows do GitHub Actions, a partir da
+    presença dos ficheiros já existentes em `.github/workflows` — apenas
+    uma verificação de ficheiros no repositório, não consulta a API do
+    GitHub nem o estado real das execuções."""
+    workflows_dir = REPO_ROOT / ".github" / "workflows"
+    count = len(list(workflows_dir.glob("*.yml"))) if workflows_dir.exists() else 0
+    if count:
+        return f"🟢 {count} workflows", "ok"
+    return "🔴 Nenhum workflow", "off"
+
+
 # ---------------------------------------------------------------------------
 # Extração de metadados do evento em direto
 # ---------------------------------------------------------------------------
@@ -608,6 +637,21 @@ def count_alerts_sent_today() -> int:
     today = datetime.utcnow().date().isoformat()
     sent = df[df["telegram_sent"] == 1]
     return int(sent["timestamp"].astype(str).str.startswith(today).sum())
+
+
+def split_live_snapshots_by_decision(
+    snapshots: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Separa os snapshots já construídos por `build_match_snapshot` em duas
+    listas de APRESENTAÇÃO para a Home (Sprint 1A) — jogos cuja decisão já
+    calculada é 🟢 APOSTAR AGORA, e todos os outros jogos em direto
+    monitorizados. Não recalcula nem altera nenhuma decisão: apenas lê
+    `snap["decision"]["label"]`, já produzido por `decision_badge`.
+    """
+    bet_now = [s for s in snapshots if s["decision"]["label"] == "🟢 APOSTAR AGORA"]
+    watching = [s for s in snapshots if s["decision"]["label"] != "🟢 APOSTAR AGORA"]
+    return bet_now, watching
 
 
 def build_live_alert_monitor_rows(snapshots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

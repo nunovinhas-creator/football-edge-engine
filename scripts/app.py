@@ -36,13 +36,16 @@ from src.report.dashboard_data import (
     extract_competition,
     extract_status_label,
     get_bsd_status,
+    get_github_actions_status,
     get_ml_status,
+    get_scanner_status,
     get_telegram_status,
     load_goal_imminent_alerts,
     load_live_alerts,
     load_live_history,
     load_value_alerts,
     run_demo_backtest,
+    split_live_snapshots_by_decision,
 )
 from src.report.explainability import generate_explanation
 from src.report.historical_validation import build_historical_validation
@@ -243,24 +246,31 @@ using_demo = not live_events
 bsd_label, bsd_color = get_bsd_status()
 telegram_label, telegram_color = get_telegram_status()
 ml_label, ml_color = get_ml_status(ml_predictor)
-system_label, system_color = ("🟢 Operacional", "ok")
+scanner_label, scanner_color = get_scanner_status()
+github_actions_label, github_actions_color = get_github_actions_status()
+
+# ---------------------------------------------------------------------------
+# 1. Cabeçalho — tudo numa única linha (Sprint 1A: reorganização apenas de
+# apresentação, nenhum destes valores é recalculado aqui).
+# ---------------------------------------------------------------------------
 
 header_left, header_right = st.columns([3, 1])
 with header_left:
     st.title("⚽ Football Edge Engine")
-    st.caption(f"Dashboard Pro — {DASHBOARD_VERSION} · Decisão do motor em destaque, sem ruído.")
 with header_right:
     if st.button("🔄 Atualizar Dados", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 st.markdown(
-    pill(f"Sistema: {system_label}", system_color)
-    + pill(f"API BSD: {bsd_label}", bsd_color)
+    pill(f"Versão: {DASHBOARD_VERSION}", "ok")
+    + pill(f"Última atualização: {datetime.now().strftime('%H:%M:%S')}", "ok")
+    + pill(f"Jogos Live: {len(live_events)}", "ok" if live_events else "warn")
+    + pill(f"Scanner: {scanner_label}", scanner_color)
     + pill(f"Telegram: {telegram_label}", telegram_color)
+    + pill(f"BSD API: {bsd_label}", bsd_color)
     + pill(f"Machine Learning: {ml_label}", ml_color)
-    + pill(f"Jogos ao vivo: {len(live_events)}", "ok" if live_events else "warn")
-    + pill(f"Última atualização: {datetime.now().strftime('%H:%M:%S')}", "ok"),
+    + pill(f"GitHub Actions: {github_actions_label}", github_actions_color),
     unsafe_allow_html=True,
 )
 
@@ -272,14 +282,6 @@ if using_demo:
     )
 
 st.divider()
-
-# ---------------------------------------------------------------------------
-# Navegação principal
-# ---------------------------------------------------------------------------
-
-tab_live, tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
-    ["🔥 Monitor ao Vivo", "📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor", "🚨 Goal Imminent Alerts"]
-)
 
 
 # ---------------------------------------------------------------------------
@@ -340,33 +342,56 @@ def render_decision_panel(snap: dict) -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def render_models_panel(snap: dict) -> None:
-    section_title("🧩 Painel dos Modelos")
-    m = snap["models"]
-    cols = st.columns(4)
+def _render_single_model_card(title: str, market: str, prob: float, footnote: str) -> None:
+    """Um único cartão de modelo (mesmo estilo/markup já usado antes desta
+    reorganização em `render_models_panel` — só extraído para permitir
+    ordenar Goal Engine/Monte Carlo/Machine Learning/Dixon-Coles como
+    painéis 3-6 separados, conforme a ORDEM da Sprint 1A)."""
+    color = "ok" if prob >= 60 else ("warn" if prob >= 35 else "off")
+    st.markdown(
+        f"""
+        <div class="fee-card">
+            <div style="font-weight:700;">{title}</div>
+            <div style="opacity:0.7;font-size:0.78rem;margin-bottom:6px;">{market}</div>
+            <div style="font-size:1.8rem;font-weight:800;color:{_BADGE_BORDERS[color]};">{prob:.1f}%</div>
+            <div style="opacity:0.75;font-size:0.78rem;">{footnote}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.progress(min(max(prob / 100.0, 0.0), 1.0))
 
-    cards = [
-        ("⚙️ Goal Engine", m["goal_engine"]["probability"], m["goal_engine"]["market"], m["goal_engine"]["status"]),
-        ("🤖 Machine Learning", m["machine_learning"]["probability"], m["machine_learning"]["market"], f"Conf.: {m['machine_learning']['confidence']:.0f}/100"),
-        ("🎲 Monte Carlo", m["monte_carlo"]["over_15"], m["monte_carlo"]["market"], f"Over 2.5: {m['monte_carlo']['over_25']}% · BTTS: {m['monte_carlo']['btts']}%"),
-        ("📐 Dixon-Coles", max(m["dixon_coles"]["home"], m["dixon_coles"]["draw"], m["dixon_coles"]["away"]), m["dixon_coles"]["market"], f"1:{m['dixon_coles']['home']}% X:{m['dixon_coles']['draw']}% 2:{m['dixon_coles']['away']}%"),
-    ]
 
-    for col, (name, prob, market, status) in zip(cols, cards):
-        color = "ok" if prob >= 60 else ("warn" if prob >= 35 else "off")
-        with col:
-            st.markdown(
-                f"""
-                <div class="fee-card">
-                    <div style="font-weight:700;">{name}</div>
-                    <div style="opacity:0.7;font-size:0.78rem;margin-bottom:6px;">{market}</div>
-                    <div style="font-size:1.8rem;font-weight:800;color:{_BADGE_BORDERS[color]};">{prob:.1f}%</div>
-                    <div style="opacity:0.75;font-size:0.78rem;">{status}</div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.progress(min(max(prob / 100.0, 0.0), 1.0))
+def render_goal_engine_panel(snap: dict) -> None:
+    section_title("⚙️ Goal Engine")
+    m = snap["models"]["goal_engine"]
+    _render_single_model_card("⚙️ Goal Engine", m["market"], m["probability"], m["status"])
+
+
+def render_monte_carlo_panel(snap: dict) -> None:
+    section_title("🎲 Monte Carlo")
+    m = snap["models"]["monte_carlo"]
+    _render_single_model_card(
+        "🎲 Monte Carlo", m["market"], m["over_15"],
+        f"Over 2.5: {m['over_25']}% · BTTS: {m['btts']}%",
+    )
+
+
+def render_ml_panel(snap: dict) -> None:
+    section_title("🤖 Machine Learning")
+    m = snap["models"]["machine_learning"]
+    _render_single_model_card(
+        "🤖 Machine Learning", m["market"], m["probability"], f"Conf.: {m['confidence']:.0f}/100"
+    )
+
+
+def render_dixon_coles_panel(snap: dict) -> None:
+    section_title("📐 Dixon-Coles")
+    m = snap["models"]["dixon_coles"]
+    _render_single_model_card(
+        "📐 Dixon-Coles", m["market"], max(m["home"], m["draw"], m["away"]),
+        f"1:{m['home']}% X:{m['draw']}% 2:{m['away']}%",
+    )
 
     c = snap["consensus"]
     st.markdown(
@@ -675,6 +700,14 @@ def render_logs_panel(snap: dict) -> None:
 
 
 def render_match(snap: dict, bankroll: float, report) -> None:
+    """
+    Detalhe completo de um jogo ("▶ Ver análise" — Sprint 1A). TODOS os
+    painéis já existentes continuam presentes, apenas escondidos por
+    omissão e revelados ao clicar no botão (ver `render_bet_now_card`).
+    Ordem oficial da Sprint 1A (1 Decisão .. 10 Histórico); os painéis que
+    não fazem parte dessa lista (Resumo do Jogo, Explicação, Logs) são
+    mantidos, não eliminados, e posicionados fora da sequência numerada.
+    """
     card = snap["card"]
     section_title("🏟️ Resumo do Jogo")
     st.subheader(f"{card['home_team']} {card['home_score']} - {card['away_score']} {card['away_team']}")
@@ -686,76 +719,178 @@ def render_match(snap: dict, bankroll: float, report) -> None:
     meta_cols[2].metric("Tempo Decorrido", f"{card['minute']}'")
     meta_cols[3].metric("Estado", card["status"])
 
-    render_decision_panel(snap)
-    render_models_panel(snap)
-    render_value_panel(snap, bankroll)
-    render_live_panel(snap)
-    render_strength_panel(snap)
+    render_decision_panel(snap)                       # 1. Decisão
+    render_why_this_decision_panel(snap)               # 2. Explainability
+    render_goal_engine_panel(snap)                      # 3. Goal Engine
+    render_monte_carlo_panel(snap)                       # 4. Monte Carlo
+    render_ml_panel(snap)                                 # 5. Machine Learning
+    render_dixon_coles_panel(snap)                         # 6. Dixon-Coles
+    render_value_panel(snap, bankroll)                      # 7. Mercado
+    render_live_panel(snap)                                  # 8. Estatísticas Live
+    render_strength_panel(snap)                               # 9. Strength
+    render_historical_validation_panel(snap, report)            # 10. Histórico
+
     render_explanation_panel(snap)
-    render_why_this_decision_panel(snap)
-    render_historical_validation_panel(snap, report)
     render_logs_panel(snap)
 
 
-# ---------------------------------------------------------------------------
-# 🔥 Tab: Monitor ao Vivo
-# ---------------------------------------------------------------------------
+def render_bet_now_card(snap: dict, bankroll: float, report) -> None:
+    """Cartão da zona '🟢 Apostar Agora' — apenas Equipas, Competição,
+    Minuto, Odd, Mercado, Engine Score e o botão '▶ Ver análise'. Ao
+    clicar, revela TODOS os painéis existentes (`render_match`), que ficam
+    escondidos por omissão — nenhum painel é eliminado."""
+    card = snap["card"]
+    value = snap["value"]
+    es = snap["engine_score"]
 
-with tab_live:
-    bankroll = st.number_input(
-        "Banca de referência para cálculo da stake (€)", min_value=10.0, value=1000.0, step=50.0
+    st.markdown(
+        f"""
+        <div class="fee-card">
+            <div style="font-weight:700;font-size:1.05rem;">{card['home_team']} vs {card['away_team']}</div>
+            <div style="opacity:0.7;font-size:0.8rem;margin-bottom:6px;">{card['competition']}</div>
+            <div style="font-size:0.85rem;">⏱️ Minuto: <b>{card['elapsed']}</b></div>
+            <div style="font-size:0.85rem;">Odd: <b>{value['bookie_odd']:.2f}</b> · Mercado: {value['market']}</div>
+            <div style="font-size:0.9rem;margin-top:6px;">Engine Score:
+                <b style="color:{_BADGE_BORDERS[es['color']]};">{es['score']:.0f}/100</b> ({es['label']})</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
 
-    # Mesmo BacktestReport usado pelo separador "📊 Backtest" (ver abaixo) —
-    # a Validação Histórica da Aposta Atual reutiliza-o para pesquisar
-    # jogos semelhantes, nunca carrega nem recalcula um dataset novo.
-    backtest_report_for_validation = _load_backtest_report()
+    state_key = f"show_analysis_{snap['match_id']}"
+    if st.button("▶ Ver análise", key=f"btn-{state_key}", use_container_width=True):
+        st.session_state[state_key] = not st.session_state.get(state_key, False)
 
+    if st.session_state.get(state_key, False):
+        with st.container(border=True):
+            render_match(snap, bankroll, report)
+
+
+def render_watching_card(snap: dict) -> None:
+    """Cartão da zona '🟡 Em Observação' — apenas Equipas, Minuto, Engine
+    Score e Estado. Nada mais (sem botão de análise detalhada)."""
+    card = snap["card"]
+    es = snap["engine_score"]
+    d = snap["decision"]
+
+    st.markdown(
+        f"""
+        <div class="fee-card">
+            <div style="font-weight:700;">{card['home_team']} vs {card['away_team']}</div>
+            <div style="font-size:0.85rem;margin-top:4px;">⏱️ Minuto: <b>{card['elapsed']}</b></div>
+            <div style="font-size:0.9rem;margin-top:4px;">Engine Score:
+                <b style="color:{_BADGE_BORDERS[es['color']]};">{es['score']:.0f}/100</b></div>
+            <div style="margin-top:6px;">{pill(d['label'], d['color'])}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Snapshots dos jogos em direto — mesma construção já usada antes desta
+# reorganização (Sprint 1A é só de apresentação: nenhum snapshot, decisão,
+# probabilidade, edge, EV, Kelly ou lambda é recalculado aqui). Alimenta
+# as zonas 2/3/4 da Home e, mais abaixo, o separador "🚨 Live Alert
+# Monitor" — sem recalcular nada.
+# ---------------------------------------------------------------------------
+
+backtest_report_for_validation = _load_backtest_report()
+
+if using_demo:
+    events_to_render = [DEMO_EVENT]
+else:
+    events_to_render = live_events
+
+live_snapshots = []
+for event in events_to_render:
     if using_demo:
-        events_to_render = [DEMO_EVENT]
+        match_data = DEMO_MATCH_DATA
     else:
-        events_to_render = live_events
+        try:
+            match_data = fetcher.parse_live_metrics_for_engine(event)
+        except Exception:
+            match_data = {
+                "match_id": event.get("id", 0),
+                "home_team": event.get("home_team", "Casa"),
+                "away_team": event.get("away_team", "Fora"),
+                "current_minute": event.get("current_minute", 0),
+                "home_score": event.get("home_score", 0),
+                "away_score": event.get("away_score", 0),
+            }
 
-    # Snapshots reunidos aqui para alimentar o painel "🚨 Live Alert
-    # Monitor" (separador abaixo) sem recalcular nada — reutiliza
-    # exatamente os mesmos `snap` já construídos para este separador.
-    live_snapshots = []
+    competition = extract_competition(event)
+    status_label = extract_status_label(event, match_data.get("current_minute", 0))
 
-    for idx, event in enumerate(events_to_render):
-        if using_demo:
-            match_data = DEMO_MATCH_DATA
-        else:
-            try:
-                match_data = fetcher.parse_live_metrics_for_engine(event)
-            except Exception:
-                match_data = {
-                    "match_id": event.get("id", 0),
-                    "home_team": event.get("home_team", "Casa"),
-                    "away_team": event.get("away_team", "Fora"),
-                    "current_minute": event.get("current_minute", 0),
-                    "home_score": event.get("home_score", 0),
-                    "away_score": event.get("away_score", 0),
-                }
+    snap = build_match_snapshot(
+        match_data,
+        competition=competition,
+        status_label=status_label,
+        ml_predictor=ml_predictor,
+        goal_engine=goal_engine,
+    )
+    live_snapshots.append(snap)
 
-        competition = extract_competition(event)
-        status_label = extract_status_label(event, match_data.get("current_minute", 0))
+bet_now_snapshots, watching_snapshots = split_live_snapshots_by_decision(live_snapshots)
 
-        snap = build_match_snapshot(
-            match_data,
-            competition=competition,
-            status_label=status_label,
-            ml_predictor=ml_predictor,
-            goal_engine=goal_engine,
-        )
-        live_snapshots.append(snap)
+bankroll = st.number_input(
+    "Banca de referência para cálculo da stake (€)", min_value=10.0, value=1000.0, step=50.0
+)
 
-        card = snap["card"]
-        header = (
-            f"⚽ {card['home_team']} {card['home_score']}-{card['away_score']} {card['away_team']} "
-            f"({card['elapsed']}) — {snap['decision']['label']} · Engine Score {snap['engine_score']['score']:.0f}/100"
-        )
-        with st.expander(header, expanded=(idx == 0)):
-            render_match(snap, bankroll, backtest_report_for_validation)
+# ---------------------------------------------------------------------------
+# 2. 🟢 Apostar Agora
+# ---------------------------------------------------------------------------
+
+section_title("🟢 Apostar Agora")
+
+if not bet_now_snapshots:
+    st.info("Sem oportunidades neste momento.")
+else:
+    for row_start in range(0, len(bet_now_snapshots), 3):
+        row_snaps = bet_now_snapshots[row_start:row_start + 3]
+        cols = st.columns(len(row_snaps))
+        for col, snap in zip(cols, row_snaps):
+            with col:
+                render_bet_now_card(snap, bankroll, backtest_report_for_validation)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 3. 🟡 Em Observação
+# ---------------------------------------------------------------------------
+
+section_title("🟡 Em Observação")
+
+if not watching_snapshots:
+    st.caption("Nenhum jogo em observação neste momento.")
+else:
+    for row_start in range(0, len(watching_snapshots), 4):
+        row_snaps = watching_snapshots[row_start:row_start + 4]
+        cols = st.columns(len(row_snaps))
+        for col, snap in zip(cols, row_snaps):
+            with col:
+                render_watching_card(snap)
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# 4. 🗓️ Próximos Jogos — apenas o painel, sem lógica (Sprint 2).
+# ---------------------------------------------------------------------------
+
+section_title("🗓️ Próximos Jogos")
+st.info("Será implementado na Sprint 2.")
+
+st.divider()
+
+# ---------------------------------------------------------------------------
+# Navegação secundária — Backtest/Histórico/Live Alert Monitor/Goal
+# Imminent Alerts permanecem EXATAMENTE como estavam (não alterados pela
+# Sprint 1A): apenas passaram para segundo plano, atrás das 4 zonas acima.
+# ---------------------------------------------------------------------------
+
+tab_backtest, tab_history, tab_premium_alerts, tab_goal_imminent = st.tabs(
+    ["📊 Backtest", "🗂️ Histórico & Logs", "🚨 Live Alert Monitor", "🚨 Goal Imminent Alerts"]
+)
 
 
 # ---------------------------------------------------------------------------
