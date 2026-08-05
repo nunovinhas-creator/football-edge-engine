@@ -188,33 +188,59 @@ jobs:
               f.write("\n".join(lines) + "\n")
           PYEOF
 
-      - name: Criar branch, commit e abrir PR
+      - name: Adicionar fixture ao branch de dados (nunca forçado, timestamp evita colisão)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Recria o branch de dados a partir do HEAD atual em cada execução —
-          # torna o workflow repetível mesmo que o branch já exista de um run anterior.
-          git checkout -B data/fixture-bsd-v2
-          git add tests/fixtures/events_v2_sample.json
-          git commit -m "test: adiciona fixture de amostra de /api/v2/events/" || echo "Fixture idêntico ao commit anterior — nada para gravar."
-          # --force simples (não --force-with-lease): o runner nunca buscou o
-          # branch remoto, por isso não teria uma ref local para comparar, e
-          # este branch é gerido inteiramente por este workflow (só dados, sem
-          # commits manuais esperados).
-          git push --force -u origin data/fixture-bsd-v2
+          # Um `git push --force` recriando o branch a partir do HEAD atual
+          # em cada execução (comportamento anterior) apaga em silêncio
+          # qualquer captura de um run anterior que não esteja também no ref
+          # que disparou este run — foi assim que events_v2_window.json
+          # (Bloco A) desapareceu num run seguinte. Um fixture que
+          # desaparece sem aviso invalida testes que dependam dele.
+          #
+          # Guarda o fixture capturado nesta execução antes de mudar de
+          # branch: um `git checkout` para um branch diferente não tem
+          # forma previsível de preservar alterações não commitadas.
+          cp tests/fixtures/events_v2_sample.json /tmp/captured_sample.json
 
-          # Um push (mesmo com --force) para um branch com PR aberto atualiza
-          # esse PR automaticamente — só criamos um novo se não existir nenhum.
+          timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+
+          # Vai buscar o branch de dados já existente em vez de o recriar —
+          # cada captura fica com o seu próprio ficheiro com timestamp,
+          # nunca substitui nem apaga as anteriores.
+          if git ls-remote --exit-code --heads origin data/fixture-bsd-v2 > /dev/null 2>&1; then
+            git fetch origin data/fixture-bsd-v2
+            git checkout -B data/fixture-bsd-v2 origin/data/fixture-bsd-v2
+          else
+            git checkout -B data/fixture-bsd-v2
+          fi
+
+          mkdir -p tests/fixtures/captures
+          cp /tmp/captured_sample.json tests/fixtures/events_v2_sample.json
+          cp /tmp/captured_sample.json "tests/fixtures/captures/events_v2_sample_${timestamp}.json"
+
+          # events_v2_sample.json de topo mantém-se como "última captura"
+          # (conveniência de leitura) — não substitui as cópias com
+          # timestamp em captures/, que acumulam o histórico completo.
+          git add tests/fixtures/events_v2_sample.json "tests/fixtures/captures/events_v2_sample_${timestamp}.json"
+          git commit -m "test: captura fixture de /api/v2/events/ (${timestamp})" || echo "Fixture idêntico ao commit anterior — nada para gravar."
+
+          # Sem --force: se o branch remoto tiver avançado de forma que não
+          # dá para avançar em fast-forward, o push falha alto em vez de
+          # apagar silenciosamente o que lá estava.
+          git push origin data/fixture-bsd-v2
+
           existing_pr=$(gh pr list --head data/fixture-bsd-v2 --state open --json number --jq '.[0].number // empty')
           if [ -n "$existing_pr" ]; then
             echo "- PR #$existing_pr já existia para \`data/fixture-bsd-v2\` — atualizado com este commit, sem duplicar." >> "$GITHUB_STEP_SUMMARY"
           else
             gh pr create \
               --title "test: fixture de amostra de /api/v2/events/" \
-              --body "Fixture capturado via workflow_dispatch (\`captura-fixture-bsd.yml\`) a partir de \`GET /api/v2/events/?limit=5\`. Ver o resumo (\`GITHUB_STEP_SUMMARY\`) da execução para detalhes de estrutura da resposta e contagem de eventos na janela de 24h." \
+              --body "Fixture capturado via workflow_dispatch (\`captura-fixture-bsd.yml\`) a partir de \`GET /api/v2/events/?limit=5\`. Capturas anteriores preservadas em \`tests/fixtures/captures/\` (o branch já não é forçado — nunca são apagadas). Ver o resumo (\`GITHUB_STEP_SUMMARY\`) da execução para detalhes de estrutura da resposta e contagem de eventos na janela de 24h." \
               --base "${{ github.event.repository.default_branch }}" \
               --head data/fixture-bsd-v2
           fi
